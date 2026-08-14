@@ -1,0 +1,62 @@
+{
+  "name": "competo-sql-formatter",
+  "displayName": "Competo SQL Formatter",
+  "description": "Formata arquivos .sql seguindo o estilo house (river style) usado no Competo.",
+  "version": "0.1.0",
+  "publisher": "solis",
+  "private": true,
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.solis.com.br/competo/sql-river-style.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Formatters"
+  ],
+  "activationEvents": [
+    "onLanguage:sql"
+  ],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "competoSqlFormatter.format",
+        "title": "Competo SQL: Formatar documento"
+      }
+    ],
+    "configuration": {
+      "title": "Competo SQL Formatter",
+      "properties": {
+        "competoSqlFormatter.indentSize": {
+          "type": "number",
+          "default": 4,
+          "description": "Número de espaços usado para indentar corpos de CTE e subqueries em FROM/JOIN."
+        },
+        "competoSqlFormatter.additionalFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Nomes extras de funções nativas (além da lista padrão) que devem ser colocadas em maiúsculas ao formatar."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "pretest": "npm run compile",
+    "test": "node ./out/test/run.js",
+    "smoke": "node ./out/test/smoke.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
