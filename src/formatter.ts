@@ -1,5 +1,5 @@
 /**
- * Formatter de SQL no estilo "river" usado no Competo (ver memória
+ * Formatter de SQL no estilo "river" (ver memória
  * feedback-sql-formatting-style). Não é um formatter SQL genérico e
  * configurável: é deliberadamente opinativo, reproduzindo as 9 regras
  * confirmadas pelo usuário. Ver README.md para exemplos e limitações

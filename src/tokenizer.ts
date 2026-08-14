@@ -1,5 +1,5 @@
 /**
- * Tokenizer para SQL bruto (dialeto PostgreSQL, o usado no Competo).
+ * Tokenizer para SQL bruto (dialeto PostgreSQL).
  *
  * Não é um parser SQL completo — é deliberadamente simples: reconhece
  * comentários, strings, identificadores (incluindo `tabela.coluna` e

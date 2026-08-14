@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { formatSql } from './formatter';
 
 function getOptions(): { indentSize: number; additionalFunctions: string[] } {
-  const cfg = vscode.workspace.getConfiguration('competoSqlFormatter');
+  const cfg = vscode.workspace.getConfiguration('sqlRiverStyle');
   return {
     indentSize: cfg.get<number>('indentSize', 4),
     additionalFunctions: cfg.get<string[]>('additionalFunctions', []),
@@ -29,13 +29,13 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   });
 
-  const command = vscode.commands.registerCommand('competoSqlFormatter.format', async () => {
+  const command = vscode.commands.registerCommand('sqlRiverStyle.format', async () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
       return;
     }
     if (editor.document.languageId !== 'sql') {
-      vscode.window.showWarningMessage('Competo SQL Formatter: o arquivo ativo não é SQL.');
+      vscode.window.showWarningMessage('SQL River Style: the active file is not a SQL document.');
       return;
     }
     const edits = formatDocument(editor.document);

@@ -1,12 +1,265 @@
-# Competo SQL Formatter
+# SQL River Style
 
-Extensão VSCode que formata arquivos `.sql` seguindo o estilo house
-("river style") usado no Competo para SQL escrito à mão — queries de
-relatório, scripts avulsos, campos `sql` de `objetos`/`paineis` exportados
-para `.sql`. Não é um formatter genérico/configurável: reproduz um
-conjunto fixo de convenções confirmadas pelo usuário.
+An opinionated VS Code formatter for hand-written SQL — report queries,
+one-off scripts, ad-hoc exports — that lays keywords out in the classic
+**"river style"**: `SELECT`/`FROM`/`WHERE`/... right-aligned to a common
+column, one column per line, structured `CASE` blocks and CTEs. It is
+**not** a generic, configurable formatter: it reproduces a fixed set of
+house conventions, the same ones this project started from when it was
+an internal tool before going public.
 
-## Regras aplicadas
+*Leia isto em [português](#português) mais abaixo.*
+
+## Rules applied
+
+1. **Right-aligned keywords ("river style")**: `SELECT`, `FROM`,
+   `WHERE`, `AND`/`OR`, `INNER/LEFT/RIGHT/FULL/CROSS JOIN`, `ON`/`USING`,
+   `UNION ALL`, `GROUP BY`, `ORDER BY`, `HAVING`, `LIMIT`, `OFFSET` — and,
+   in DML, `INSERT INTO`, `UPDATE`, `SET`, `DELETE`, `VALUES`,
+   `RETURNING` — all end at the same column, set by the longest keyword
+   in use in that query/statement. When the block has a `SELECT`, it
+   never gets less than 4 spaces of indentation before it — even if
+   `SELECT` alone would already be the longest keyword in use (e.g. a
+   `SELECT` without `JOIN` whose longest clause is `GROUP BY`, which
+   alone would only need 2 spaces).
+2. **One column per line** in `SELECT`, `GROUP BY`, `ORDER BY` — and
+   also in `SET` (one assignment per line), `VALUES` (one tuple per
+   line) and `RETURNING` —, vertically aligned under the first item of
+   the list.
+3. **Table alias**: the formatter doesn't add or remove aliases — it
+   only reformats what's already written. Avoiding aliases (except in
+   self-joins) is a convention left to whoever writes the query.
+4. **Uppercase**: SQL keywords, recognized native functions (`COUNT`,
+   `UNNEST`, `ARRAY_LENGTH`, `COALESCE`...) and casts (`::INT`,
+   `::TEXT`). **Lowercase**: column-alias `as`. CTE alias uses uppercase
+   `AS` (the one exception).
+5. `JOIN` condition wrapped in parentheses, on its own line after `ON`:
+   `ON ( a.x = b.y )`. With more than one condition, each `AND`/`OR`
+   breaks onto its own line inside the parentheses, aligned under the
+   first condition — this holds whether the source already writes
+   `ON ( a.x = b.x AND a.y = b.y )` or without parentheses
+   (`ON a.x = b.x AND a.y = b.y`); both format the same way. `USING`
+   doesn't get this wrap — it serves both the `USING (col1, col2)` form
+   of `JOIN` and the `USING outra_tabela` form of Postgres's multi-table
+   `DELETE`, so it's left as-is.
+6. `CASE`/`WHEN`/`THEN`/`ELSE`/`END` in blocks: the first `WHEN` stays
+   on the same line as `CASE`, each following `WHEN`/`THEN`/`ELSE`
+   becomes its own line aligned right after `CASE ` (same column as the
+   first `WHEN`), and `END` closes aligned with `CASE` itself. Applies
+   both to a `SELECT` item and to a `WHERE`/`ON`/etc. condition.
+7. Blank line separating `UNION ALL`/`UNION`/`EXCEPT`/`INTERSECT` from
+   what comes before/after, and separating CTE definitions from each
+   other.
+8. Chained CTEs with no extra indentation: closing one and opening the
+   next on the same line (`), next_cte AS (`).
+9. Standalone `--` comments (alone on their line) always sit at column
+   1, unindented — even inside CTEs/subqueries. Comments at the end of a
+   code line stay at the end of that line.
+10. No trailing `;` at the end of the file (the query is treated as a
+    fragment). In files with multiple statements, the `;` between them
+    is kept — only the last one is removed.
+
+Example:
+
+```sql
+    SELECT ecm_conteudo.id,
+           ecm_conteudo.nome,
+           COUNT(ecm_assinatura.id) as total_assinaturas
+      FROM ecm_conteudo
+INNER JOIN ecm_assinatura
+        ON ( ecm_assinatura.ecm_conteudo_id = ecm_conteudo.id )
+     WHERE ecm_conteudo.categoria_id = 10
+       AND ecm_conteudo.ativo = TRUE
+  GROUP BY ecm_conteudo.id,
+           ecm_conteudo.nome
+  ORDER BY ecm_conteudo.nome
+```
+
+`ON` with more than one condition breaks one per line (works the same
+whether `AND`/`OR` is already wrapped in parentheses in the source or
+not):
+
+```sql
+    SELECT issues.id
+      FROM issues
+INNER JOIN custom_values campo_nome
+        ON ( campo_nome.customized_id = issues.id
+         AND campo_nome.custom_field_id = 109 )
+```
+
+`CASE`/`WHEN`/`THEN` in blocks, one per line (works both as a `SELECT`
+item and inside a `WHERE` condition):
+
+```sql
+     WHERE issues.status_id <> 42
+       AND CASE WHEN '${situacao}' = ''
+                THEN TRUE
+                WHEN '${situacao}' = 'a' -- Arquivados
+                THEN issues.status_id = 41
+           END
+```
+
+Chained CTEs:
+
+```sql
+WITH primeira_cte AS (
+    SELECT a.id,
+           a.valor::NUMERIC
+      FROM tabela_a a
+
+), segunda_cte AS (
+    SELECT b.id
+      FROM tabela_b b
+)
+SELECT primeira_cte.id
+  FROM primeira_cte
+```
+
+Subqueries in `FROM`/`JOIN` are formatted recursively, with their own
+indentation and their own river alignment (independent of the outer
+scope) — the same goes for each CTE's body.
+
+`UPDATE`/`DELETE`/`INSERT` follow the same river style (`UPDATE`/
+`DELETE` share the same clause machinery as `SELECT`, so `FROM`,
+`JOIN`, `WHERE`/`AND`/`OR` etc. all work the same way):
+
+```sql
+UPDATE ecm_conteudo
+   SET nome = 'novo nome',
+       ativo = TRUE
+ WHERE ecm_conteudo.id = 1
+   AND ecm_conteudo.categoria_id = 2
+```
+
+```sql
+   DELETE
+     FROM ecm_conteudo
+    USING ecm_categoria
+    WHERE ecm_conteudo.categoria_id = ecm_categoria.id
+      AND ecm_categoria.ativo = FALSE
+RETURNING ecm_conteudo.id
+```
+
+`INSERT INTO` shares the same river with whichever of
+`VALUES`/`SELECT`/`RETURNING` comes after it in the same statement:
+
+```sql
+INSERT INTO ecm_conteudo (nome, categoria_id)
+     VALUES ('a', 1),
+            ('b', 2)
+  RETURNING id
+```
+
+## Usage
+
+- **Format document**: `Shift+Alt+F` (VS Code's default formatter
+  shortcut for `.sql`), or Command Palette → `SQL River Style: Format
+  Document`.
+- **Format on save**: enable `"editor.formatOnSave": true` in VS Code
+  for `.sql` files (globally, or under `[sql]` in `settings.json`).
+
+## Configuration
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `sqlRiverStyle.indentSize` | `4` | Spaces used to indent CTE bodies and derived-table subqueries in `FROM`/`JOIN`. |
+| `sqlRiverStyle.additionalFunctions` | `[]` | Extra function names (besides the built-in native list) to uppercase when used as a function call, e.g. `["fn_calcula_total"]`. |
+
+## Scope and known limitations
+
+- Covers `SELECT`/`WITH` (the common case of report queries) and basic
+  DML — `INSERT`/`UPDATE`/`DELETE`, including `UPDATE ... FROM`,
+  `DELETE ... USING`, `INSERT ... VALUES`/`INSERT ... SELECT` and
+  `RETURNING`. Other statements (DDL, `MERGE`, session commands...) are
+  out of scope: they only get their keywords uppercased, without river
+  restructuring.
+- `INSERT ... ON CONFLICT` isn't specifically modeled — `ON CONFLICT
+  (...) DO NOTHING` stays concatenated at the end of the `VALUES` line;
+  in `ON CONFLICT (...) DO UPDATE SET ...` the `SET` gets its own line
+  (reusing the normal `SET` marker), but the `ON CONFLICT (...) DO
+  UPDATE` that precedes it stays entirely on the `VALUES` line. It
+  doesn't break the query, it just isn't formatted into full river
+  clauses.
+- Uppercased "native functions" come from a fixed list of PostgreSQL
+  functions (`src/formatter.ts`, `NATIVE_FUNCTIONS` constant); your own
+  database business functions are only uppercased if listed in
+  `sqlRiverStyle.additionalFunctions`.
+- Nested `CASE` (a `CASE` inside another's `WHEN`/`THEN`/`ELSE`) only
+  breaks into blocks at the outermost `CASE` — the nested one(s) render
+  inline via `renderTokensInline`, like any other ordinary expression.
+- Chained quoted identifiers (`"tabela"."coluna"`, common in SQL
+  exported by query builders such as Laravel's) are recognized as a
+  single qualified identifier, preserving the `.` — same as
+  `tabela.coluna` unquoted. Any character not recognized by any
+  tokenizer rule (e.g. a `?` bind parameter from a query log) becomes
+  an isolated token instead of being dropped — the formatter should
+  never silently erase content from the original SQL, even when it
+  doesn't know how to format it with ideal spacing.
+- Unnecessary quotes around an identifier are stripped:
+  `"tabela"."coluna"` becomes `tabela.coluna` when the content is only
+  lowercase/digit/`_` and doesn't collide with a reserved PostgreSQL
+  keyword. The collision check uses `RESERVED_KEYWORDS`
+  (`src/tokenizer.ts`) — the full list of "reserved" variants from the
+  [official Postgres keyword
+  table](https://www.postgresql.org/docs/current/sql-keywords-appendix.html),
+  not the curated `KEYWORD_SET` used for uppercasing/clause markers
+  (that one is deliberately much smaller — uppercasing `CREATE`/
+  `TABLE`/`ARRAY`/etc. whenever they appear would collide with DDL,
+  which is out of scope for this formatter). Non-reserved Postgres
+  words that are also common column names (`date`, `time`, `type`,
+  `value`, `text`, `name`...) never lose their quotes by mistake nor
+  get forced uppercase by this list, since they aren't truly reserved.
+- Subqueries used inside an expression (`WHERE x IN (SELECT ...)`,
+  `SELECT (SELECT ...) AS foo`) render on a single line — only
+  subqueries in `FROM`/`JOIN` position (derived tables) get recursive
+  multi-line formatting.
+- Casts whose type name is more than one word (`::double precision`,
+  `::character varying`, `::timestamp with time zone`...) are
+  uppercased as a whole — the list of recognized phrases is the
+  `MULTI_WORD_CAST_TYPES` constant in `src/formatter.ts`. A compound
+  name not on that list only gets its first word uppercased.
+
+## Development
+
+```bash
+npm install
+npm run compile   # or: npm run watch
+npm test          # snapshot suite in test/run.ts
+npm run smoke     # prints the formatting of several examples, for manual inspection (test/smoke.ts)
+```
+
+To debug inside VS Code: open this repository's root as a workspace and
+press `F5` (Extension Development Host).
+
+To build an installable package:
+
+```bash
+npx @vscode/vsce package
+```
+
+That produces a `.vsix` file, installable via
+`code --install-extension sql-river-style-1.0.0.vsix` or through VS
+Code's Extensions tab → `Install from VSIX...`.
+
+## License
+
+[MIT](LICENSE) — © Eduardo Braun.
+
+---
+
+## Português
+
+Extensão de VS Code que formata SQL escrito à mão — queries de
+relatório, scripts avulsos, exportações pontuais — no estilo clássico
+**"river"**: `SELECT`/`FROM`/`WHERE`/... alinhados à direita numa coluna
+comum, uma coluna por linha, blocos `CASE` e CTEs estruturados. **Não**
+é um formatter genérico/configurável: reproduz um conjunto fixo de
+convenções de estilo, as mesmas com que este projeto começou quando
+ainda era uma ferramenta interna, antes de se tornar público.
+
+*Read this in [English](#sql-river-style) above.*
+
+### Regras aplicadas
 
 1. **Keywords alinhadas à direita ("river style")**: `SELECT`, `FROM`,
    `WHERE`, `AND`/`OR`, `INNER/LEFT/RIGHT/FULL/CROSS JOIN`, `ON`/`USING`,
@@ -142,21 +395,23 @@ INSERT INTO ecm_conteudo (nome, categoria_id)
   RETURNING id
 ```
 
-## Uso
+### Uso
 
-- **Formatar documento**: `Shift+Alt+F` (formatador padrão do VSCode para
-  `.sql`), ou paleta de comandos → `Competo SQL: Formatar documento`.
-- **Format on save**: ative `"editor.formatOnSave": true` no VSCode para
+- **Formatar documento**: `Shift+Alt+F` (formatador padrão do VS Code
+  para `.sql`), ou paleta de comandos → `SQL River Style: Format
+  Document` (o título do comando é em inglês — a extensão ainda não tem
+  tradução da paleta de comandos).
+- **Format on save**: ative `"editor.formatOnSave": true` no VS Code para
   arquivos `.sql` (globalmente ou em `[sql]` no `settings.json`).
 
-## Configuração
+### Configuração
 
 | Setting | Padrão | Descrição |
 | --- | --- | --- |
-| `competoSqlFormatter.indentSize` | `4` | Espaços usados para indentar corpo de CTEs e subqueries em `FROM`/`JOIN`. |
-| `competoSqlFormatter.additionalFunctions` | `[]` | Nomes de função extras (além da lista nativa padrão) a maiusculizar quando usados como chamada de função, ex. `["fn_calcula_total"]`. |
+| `sqlRiverStyle.indentSize` | `4` | Espaços usados para indentar corpo de CTEs e subqueries em `FROM`/`JOIN`. |
+| `sqlRiverStyle.additionalFunctions` | `[]` | Nomes de função extras (além da lista nativa padrão) a maiusculizar quando usados como chamada de função, ex. `["fn_calcula_total"]`. |
 
-## Escopo e limitações conhecidas
+### Escopo e limitações conhecidas
 
 - Cobre `SELECT`/`WITH` (o caso comum de queries de relatório) e o DML
   básico — `INSERT`/`UPDATE`/`DELETE`, incluindo `UPDATE ... FROM`,
@@ -172,8 +427,8 @@ INSERT INTO ecm_conteudo (nome, categoria_id)
   query, só não é formatado em cláusulas river completas.
 - "Funções nativas" maiusculizadas vêm de uma lista fixa de funções do
   PostgreSQL (`src/formatter.ts`, constante `NATIVE_FUNCTIONS`); funções
-  de negócio do banco só são maiusculizadas se listadas em
-  `competoSqlFormatter.additionalFunctions`.
+  de negócio do seu banco só são maiusculizadas se listadas em
+  `sqlRiverStyle.additionalFunctions`.
 - `CASE` aninhado (um `CASE` dentro do `WHEN`/`THEN`/`ELSE` de outro) só
   quebra em blocos no `CASE` mais externo — o(s) aninhado(s) renderizam
   inline via `renderTokensInline`, igual a qualquer expressão comum.
@@ -208,7 +463,7 @@ INSERT INTO ecm_conteudo (nome, categoria_id)
   constante `MULTI_WORD_CAST_TYPES` em `src/formatter.ts`. Um nome
   composto que não estiver nessa lista maiusculiza só a primeira palavra.
 
-## Desenvolvimento
+### Desenvolvimento
 
 ```bash
 npm install
@@ -217,8 +472,8 @@ npm test          # suíte de snapshots em test/run.ts
 npm run smoke     # imprime a formatação de vários exemplos, para inspeção manual (test/smoke.ts)
 ```
 
-Para depurar dentro do VSCode: abra a raiz deste repositório como workspace
-e pressione `F5` (Extension Development Host).
+Para depurar dentro do VS Code: abra a raiz deste repositório como
+workspace e pressione `F5` (Extension Development Host).
 
 Para gerar um pacote instalável:
 
@@ -227,5 +482,9 @@ npx @vscode/vsce package
 ```
 
 Isso gera um `.vsix` que pode ser instalado via
-`code --install-extension competo-sql-formatter-0.1.0.vsix` ou pela aba de
-Extensões do VSCode → `Install from VSIX...`.
+`code --install-extension sql-river-style-1.0.0.vsix` ou pela aba de
+Extensões do VS Code → `Install from VSIX...`.
+
+### Licença
+
+[MIT](LICENSE) — © Eduardo Braun.

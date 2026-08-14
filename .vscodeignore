@@ -1,8 +1,12 @@
 .vscode/**
+.claude/**
 .gitignore
 src/**
 test/**
+out/test/**
+images/icon.svg
 tsconfig.json
 node_modules/**
+package-lock.json
 **/*.map
 .eslintrc*

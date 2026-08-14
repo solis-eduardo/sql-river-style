@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!--
+    Editable source for images/icon.png. Note: this repo's build doesn't
+    rasterize this file (no rsvg-convert available in CI); icon.png was
+    generated with a small Pillow script instead (see README "Logotipo").
+    Keep this file in sync by hand if you tweak the design, or feed it to
+    a proper SVG renderer (Inkscape, rsvg-convert, Figma...) to regenerate.
+
+    Concept: two columns of "river style" pills separated by a gap (the
+    river itself). Left column = keywords, right-aligned, one per row
+    (SELECT / FROM / WHERE / AND). Right column = query content,
+    left-aligned and always longer than its keyword, one per row.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#16CCB6"/>
+      <stop offset="100%" stop-color="#0A3A57"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="128" height="128" fill="url(#bg)"/>
+
+  <!-- left column: keywords, right-aligned to x=59 -->
+  <rect x="21.5" y="30.5" width="37.5" height="10.5" rx="5.25" fill="#FFFFFF"/>
+  <rect x="34"   y="49"   width="25"   height="10.5" rx="5.25" fill="#FFFFFF"/>
+  <rect x="27.5" y="67.5" width="31.5" height="10.5" rx="5.25" fill="#FFFFFF"/>
+  <rect x="39"   y="86"   width="20"   height="10.5" rx="5.25" fill="#FFFFFF"/>
+
+  <!-- right column: query content, left-aligned to x=69, always longer -->
+  <rect x="69" y="30.5" width="45.5" height="10.5" rx="5.25" fill="#F0FAF9"/>
+  <rect x="69" y="49"   width="33"   height="10.5" rx="5.25" fill="#F0FAF9"/>
+  <rect x="69" y="67.5" width="40.5" height="10.5" rx="5.25" fill="#F0FAF9"/>
+  <rect x="69" y="86"   width="28"   height="10.5" rx="5.25" fill="#F0FAF9"/>
+</svg>

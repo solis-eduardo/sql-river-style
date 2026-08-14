@@ -1,15 +1,31 @@
 {
-  "name": "competo-sql-formatter",
-  "displayName": "Competo SQL Formatter",
-  "description": "Formata arquivos .sql seguindo o estilo house (river style) usado no Competo.",
-  "version": "0.1.1",
+  "name": "sql-river-style",
+  "displayName": "SQL River Style",
+  "description": "Opinionated SQL formatter with right-aligned (\"river style\") keywords, one column per line, and structured CTEs/JOINs/CASE blocks.",
+  "version": "1.0.0",
   "publisher": "EduardoBraun",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://gitlab.solis.com.br/competo/sql-river-style.git"
+    "url": "https://github.com/solis-eduardo/sql-river-style.git"
   },
+  "bugs": {
+    "url": "https://github.com/solis-eduardo/sql-river-style/issues"
+  },
+  "homepage": "https://github.com/solis-eduardo/sql-river-style#readme",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#0b3d5c",
+    "theme": "dark"
+  },
+  "keywords": [
+    "sql",
+    "postgresql",
+    "formatter",
+    "river style",
+    "pretty print"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -23,25 +39,25 @@
   "contributes": {
     "commands": [
       {
-        "command": "competoSqlFormatter.format",
-        "title": "Competo SQL: Formatar documento"
+        "command": "sqlRiverStyle.format",
+        "title": "SQL River Style: Format Document"
       }
     ],
     "configuration": {
-      "title": "Competo SQL Formatter",
+      "title": "SQL River Style",
       "properties": {
-        "competoSqlFormatter.indentSize": {
+        "sqlRiverStyle.indentSize": {
           "type": "number",
           "default": 4,
-          "description": "Número de espaços usado para indentar corpos de CTE e subqueries em FROM/JOIN."
+          "description": "Number of spaces used to indent CTE bodies and derived-table subqueries in FROM/JOIN."
         },
-        "competoSqlFormatter.additionalFunctions": {
+        "sqlRiverStyle.additionalFunctions": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [],
-          "description": "Nomes extras de funções nativas (além da lista padrão) que devem ser colocadas em maiúsculas ao formatar."
+          "description": "Extra native function names (besides the built-in list) to uppercase when formatting."
         }
       }
     }
