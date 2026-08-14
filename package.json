@@ -2,7 +2,7 @@
   "name": "competo-sql-formatter",
   "displayName": "Competo SQL Formatter",
   "description": "Formata arquivos .sql seguindo o estilo house (river style) usado no Competo.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "EduardoBraun",
   "private": true,
   "license": "UNLICENSED",
