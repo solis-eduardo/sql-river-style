@@ -261,7 +261,7 @@ function splitSetOps(tokens: Token[]): { blocks: Token[][]; ops: string[] } {
 function formatSelectChain(tokens: Token[], indent: number, cfg: Cfg): string[] {
   const { blocks, ops } = splitSetOps(tokens);
   const parsedBlocks = blocks.map((b) => parseSelectBlock(b));
-  const width = computeWidth(parsedBlocks, ops);
+  const width = computeWidth(parsedBlocks, ops, indent);
 
   const lines: string[] = [];
   parsedBlocks.forEach((block, idx) => {
@@ -276,15 +276,25 @@ function formatSelectChain(tokens: Token[], indent: number, cfg: Cfg): string[] 
   return lines;
 }
 
-function computeWidth(blocks: ClauseLine[][], ops: string[]): number {
+/** `SELECT` nunca fica com menos de 4 espaços de indentação antes dela, mesmo quando é a keyword mais longa da query (ex.: um SELECT sem JOIN cuja única outra cláusula é WHERE). Não afeta escopos aninhados com o indentSize padrão (4): o próprio indent já garante os 4 espaços. */
+const MIN_PAD_BEFORE_SELECT = 4;
+
+function computeWidth(blocks: ClauseLine[][], ops: string[], indent: number): number {
   let max = 0;
+  let hasSelect = false;
   for (const block of blocks) {
     for (const line of block) {
       max = Math.max(max, line.label.length);
+      if (line.label === 'SELECT') {
+        hasSelect = true;
+      }
     }
   }
   for (const op of ops) {
     max = Math.max(max, op.length);
+  }
+  if (hasSelect) {
+    max = Math.max(max, 'SELECT'.length + Math.max(0, MIN_PAD_BEFORE_SELECT - indent));
   }
   return max;
 }

@@ -13,7 +13,11 @@ conjunto fixo de convenções confirmadas pelo usuário.
    `UNION ALL`, `GROUP BY`, `ORDER BY`, `HAVING`, `LIMIT`, `OFFSET` — e, em
    DML, `INSERT INTO`, `UPDATE`, `SET`, `DELETE`, `VALUES`, `RETURNING` —
    terminam todas na mesma coluna, definida pela keyword mais longa em uso
-   naquela query/statement.
+   naquela query/statement. Quando o bloco tem um `SELECT`, ele nunca fica
+   com menos de 4 espaços de indentação antes dele — mesmo que `SELECT`
+   por si só já fosse a keyword mais longa em uso (ex.: um `SELECT` sem
+   `JOIN` cuja cláusula mais longa é `GROUP BY`, que sozinha só pediria 2
+   espaços).
 2. **Uma coluna por linha** em `SELECT`, `GROUP BY`, `ORDER BY` — e também
    em `SET` (uma atribuição por linha), `VALUES` (uma tupla por linha) e
    `RETURNING` —, alinhadas verticalmente sob o primeiro item da lista.
