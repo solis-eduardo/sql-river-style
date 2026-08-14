@@ -230,7 +230,7 @@ const cases: Case[] = [
     ].join('\n'),
   },
   {
-    name: 'identificadores entre aspas encadeados ("tabela"."coluna") preservam o ponto',
+    name: 'identificadores entre aspas encadeados ("tabela"."coluna") preservam o ponto e tiram aspas desnecessárias',
     input: `select *
        from "ecm_versoes"
        inner join "ecm_arquivos"
@@ -239,22 +239,42 @@ const cases: Case[] = [
        and "ecm_arquivos"."anexo" = true`,
     expected: [
       '    SELECT *',
-      '      FROM "ecm_versoes"',
-      'INNER JOIN "ecm_arquivos"',
-      '        ON ( "ecm_versoes"."arquivo_id" = "ecm_arquivos"."id" )',
-      '     WHERE "ecm_arquivos"."deleted_at" IS NULL',
-      '       AND "ecm_arquivos"."anexo" = TRUE',
+      '      FROM ecm_versoes',
+      'INNER JOIN ecm_arquivos',
+      '        ON ( ecm_versoes.arquivo_id = ecm_arquivos.id )',
+      '     WHERE ecm_arquivos.deleted_at IS NULL',
+      '       AND ecm_arquivos.anexo = TRUE',
       '',
     ].join('\n'),
+  },
+  {
+    name: 'identificador entre aspas só fica quando é necessário: maiúscula/acento/espaço/keyword reservada mantêm, o resto tira',
+    input: `select "Tabela"."coluna_simples", tabela."Coluna Com Espaço", tabela."situação", tabela."order" from "Tabela"`,
+    expected: [
+      'SELECT "Tabela".coluna_simples,',
+      '       tabela."Coluna Com Espaço",',
+      '       tabela."situação",',
+      '       tabela."order"',
+      '  FROM "Tabela"',
+      '',
+    ].join('\n'),
+  },
+  {
+    // "user"/"table"/"check" não estavam na lista curada (KEYWORD_SET) usada
+    // antes pra essa checagem — a lista de reservadas do Postgres é bem mais
+    // ampla, e sem ela o formatter tirava as aspas incorretamente.
+    name: 'palavra reservada do Postgres fora da lista curada de keywords do formatter mantém aspas',
+    input: `select "user", "table", "check" from tabela.tabela`,
+    expected: ['SELECT "user",', '       "table",', '       "check"', '  FROM tabela.tabela', ''].join('\n'),
   },
   {
     name: 'placeholder de bind parameter (?) do log de query do Laravel não é descartado',
     input: `select count(*) as aggregate from "ecm_versoes" where "ecm_versoes"."disco" = ? and "ecm_versoes"."ativo" = ?`,
     expected: [
       'SELECT COUNT(*) as aggregate',
-      '  FROM "ecm_versoes"',
-      ' WHERE "ecm_versoes"."disco" = ?',
-      '   AND "ecm_versoes"."ativo" = ?',
+      '  FROM ecm_versoes',
+      ' WHERE ecm_versoes.disco = ?',
+      '   AND ecm_versoes.ativo = ?',
       '',
     ].join('\n'),
   },
@@ -313,6 +333,13 @@ const cases: Case[] = [
       '     WHERE a.ativo = TRUE',
       '',
     ].join('\n'),
+  },
+  {
+    name: 'keyword interval sai maiúscula',
+    input: `select a.id from tabela a where a.criado_em <= CURRENT_TIMESTAMP - interval '0 days'`,
+    expected: ['SELECT a.id', '  FROM tabela a', " WHERE a.criado_em <= CURRENT_TIMESTAMP - INTERVAL '0 days'", ''].join(
+      '\n',
+    ),
   },
 ];
 

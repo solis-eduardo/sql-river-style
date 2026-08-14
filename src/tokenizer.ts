@@ -48,8 +48,91 @@ export const KEYWORD_SET = new Set([
   'WHEN', 'THEN', 'ELSE', 'END', 'ASC', 'DESC', 'NULLS', 'FIRST', 'LAST', 'EXISTS',
   'OVER', 'PARTITION', 'WINDOW', 'FILTER', 'WITHIN', 'LATERAL', 'INTO', 'VALUES',
   'INSERT', 'UPDATE', 'DELETE', 'SET', 'RETURNING', 'TRUE', 'FALSE', 'ANY', 'SOME',
-  'UNKNOWN', 'DEFAULT', 'COLLATE', 'CONFLICT', 'DO', 'NOTHING', 'FOR', 'OF',
+  'UNKNOWN', 'DEFAULT', 'COLLATE', 'CONFLICT', 'DO', 'NOTHING', 'FOR', 'OF', 'INTERVAL',
 ]);
+
+/**
+ * Palavras reservadas do PostgreSQL — TODAS as variantes de "reserved" na
+ * coluna "PostgreSQL" de https://www.postgresql.org/docs/current/sql-keywords-appendix.html
+ * (extraídas da tabela em 2026-08-14; reconferir se a extensão for
+ * atualizada para uma versão nova do Postgres). É uma lista bem mais ampla
+ * que `KEYWORD_SET` — inclui palavras de DDL (CREATE, CONSTRAINT, TABLE...)
+ * que nunca viram marcador de cláusula neste formatter, mas que NÃO podem
+ * aparecer como identificador sem aspas em SQL válido. Usada só pela
+ * checagem de segurança de `unquoteIfSafe` — não usar para decidir
+ * maiúsculas/marcador de cláusula, isso é papel de `KEYWORD_SET`.
+ */
+const RESERVED_KEYWORDS = new Set([
+  'ALL', 'ANALYSE', 'ANALYZE', 'AND', 'ANY', 'ARRAY', 'AS', 'ASC',
+  'ASYMMETRIC', 'AUTHORIZATION', 'BINARY', 'BOTH', 'CASE', 'CAST', 'CHECK', 'COLLATE',
+  'COLLATION', 'COLUMN', 'CONCURRENTLY', 'CONSTRAINT', 'CREATE', 'CROSS', 'CURRENT_CATALOG', 'CURRENT_DATE',
+  'CURRENT_ROLE', 'CURRENT_SCHEMA', 'CURRENT_TIME', 'CURRENT_TIMESTAMP', 'CURRENT_USER', 'DEFAULT', 'DEFERRABLE', 'DESC',
+  'DISTINCT', 'DO', 'ELSE', 'END', 'EXCEPT', 'FALSE', 'FETCH', 'FOR',
+  'FOREIGN', 'FREEZE', 'FROM', 'FULL', 'GRANT', 'GROUP', 'HAVING', 'ILIKE',
+  'IN', 'INITIALLY', 'INNER', 'INTERSECT', 'INTO', 'IS', 'ISNULL', 'JOIN',
+  'LATERAL', 'LEADING', 'LEFT', 'LIKE', 'LIMIT', 'LOCALTIME', 'LOCALTIMESTAMP', 'NATURAL',
+  'NOT', 'NOTNULL', 'NULL', 'OFFSET', 'ON', 'ONLY', 'OR', 'ORDER',
+  'OUTER', 'OVERLAPS', 'PLACING', 'PRIMARY', 'REFERENCES', 'RETURNING', 'RIGHT', 'SELECT',
+  'SESSION_USER', 'SIMILAR', 'SOME', 'SYMMETRIC', 'SYSTEM_USER', 'TABLE', 'TABLESAMPLE', 'THEN',
+  'TO', 'TRAILING', 'TRUE', 'UNION', 'UNIQUE', 'USER', 'USING', 'VARIADIC',
+  'VERBOSE', 'WHEN', 'WHERE', 'WINDOW', 'WITH',
+]);
+
+/** Um identificador entre aspas só precisa delas se tiver maiúscula, espaço, acento ou outro caractere fora de `[a-z0-9_]`, ou se colidir com uma palavra reservada do Postgres. */
+const SAFE_TO_UNQUOTE = /^[a-z_][a-z0-9_]*$/;
+
+function unquoteIfSafe(segment: string): string {
+  if (segment[0] !== '"') {
+    return segment;
+  }
+  const inner = segment.slice(1, -1).replace(/""/g, '"');
+  return SAFE_TO_UNQUOTE.test(inner) && !RESERVED_KEYWORDS.has(inner.toUpperCase()) ? inner : segment;
+}
+
+/** Separa `raw` (já casado pelo TOKEN_REGEX) em segmentos entre pontos, sem quebrar um ponto literal dentro de um segmento entre aspas. */
+function splitQualifiedSegments(raw: string): string[] {
+  const segments: string[] = [];
+  let i = 0;
+  while (i < raw.length) {
+    let j: number;
+    if (raw[i] === '"') {
+      j = i + 1;
+      while (j < raw.length) {
+        if (raw[j] === '"') {
+          if (raw[j + 1] === '"') {
+            j += 2;
+            continue;
+          }
+          j++;
+          break;
+        }
+        j++;
+      }
+    } else {
+      j = i;
+      while (j < raw.length && raw[j] !== '.') {
+        j++;
+      }
+    }
+    segments.push(raw.slice(i, j));
+    i = raw[j] === '.' ? j + 1 : j;
+  }
+  return segments;
+}
+
+/**
+ * Tira as aspas de cada segmento entre aspas de um identificador
+ * (qualificado ou não) quando elas não fazem falta — minúsculo, sem
+ * espaço/acento e sem colidir com keyword reservada. `"tabela"."coluna"`
+ * vira `tabela.coluna`; `"Tabela"."coluna"` vira `"Tabela".coluna` (só o
+ * segundo segmento é seguro de destrinchar).
+ */
+function normalizeQualifiedIdent(raw: string): string {
+  if (!raw.includes('"')) {
+    return raw;
+  }
+  return splitQualifiedSegments(raw).map(unquoteIfSafe).join('.');
+}
 
 /** Um segmento de identificador: `nome` ou `"nome com espaço/maiúsculas"`. */
 const IDENT_SEGMENT = /(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)/.source;
@@ -123,7 +206,8 @@ export function tokenize(source: string): Token[] {
       continue;
     }
     if (raw[0] === '"') {
-      tokens.push({ type: 'ident', text: raw, upper: raw.toUpperCase() });
+      const normalized = normalizeQualifiedIdent(raw);
+      tokens.push({ type: 'ident', text: normalized, upper: normalized.toUpperCase() });
       continue;
     }
     if (/^\d/.test(raw)) {

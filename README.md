@@ -181,6 +181,19 @@ INSERT INTO ecm_conteudo (nome, categoria_id)
   vira um token isolado em vez de ser descartado — o formatter nunca deve
   apagar conteúdo do SQL original em silêncio, mesmo que não saiba
   formatá-lo com o espaçamento ideal.
+- Aspas desnecessárias em identificador são removidas: `"tabela"."coluna"`
+  vira `tabela.coluna` quando o conteúdo é só minúsculas/dígito/`_` e não
+  colide com uma palavra reservada do PostgreSQL. A checagem de colisão
+  usa `RESERVED_KEYWORDS` (`src/tokenizer.ts`) — a lista completa de
+  variantes "reserved" da [tabela oficial de keywords do
+  Postgres](https://www.postgresql.org/docs/current/sql-keywords-appendix.html),
+  não a `KEYWORD_SET` curada usada pra maiúsculas/marcador de cláusula
+  (essa é bem menor de propósito — colocar `CREATE`/`TABLE`/`ARRAY`/etc.
+  em maiúsculo sempre que aparecem bateria com DDL, fora do escopo deste
+  formatter). Palavras não-reservadas do Postgres que também são nomes de
+  coluna comuns (`date`, `time`, `type`, `value`, `text`, `name`...) nunca
+  perdem as aspas por engano nem ficam forçadas a maiúsculo por essa
+  lista, já que não são reservadas de verdade.
 - Subqueries usadas dentro de uma expressão (`WHERE x IN (SELECT ...)`,
   `SELECT (SELECT ...) AS foo`) são renderizadas em uma linha só — apenas
   subqueries na posição de `FROM`/`JOIN` (derived table) recebem
