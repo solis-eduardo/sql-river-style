@@ -25,19 +25,28 @@ conjunto fixo de convenções confirmadas pelo usuário.
    `::TEXT`). **Minúsculo**: `as` de alias de coluna. Alias de CTE usa `AS`
    maiúsculo (única exceção).
 5. Condição de `JOIN` entre parênteses, em linha própria após `ON`:
-   `ON ( a.x = b.y )`. `USING` não ganha esse wrap — serve tanto a forma
+   `ON ( a.x = b.y )`. Com mais de uma condição, cada `AND`/`OR` quebra
+   linha dentro dos parênteses, alinhado sob a primeira condição — vale
+   tanto pra quem já escreve `ON ( a.x = b.x AND a.y = b.y )` quanto pra
+   quem escreve sem parênteses (`ON a.x = b.x AND a.y = b.y`), os dois
+   formatam igual. `USING` não ganha esse wrap — serve tanto a forma
    `USING (col1, col2)` de `JOIN` quanto a forma `USING outra_tabela` de
    `DELETE` multi-tabela do Postgres, e por isso fica como está.
-6. Linha em branco separando `UNION ALL`/`UNION`/`EXCEPT`/`INTERSECT` do
+6. `CASE`/`WHEN`/`THEN`/`ELSE`/`END` em blocos: o primeiro `WHEN` fica na
+   mesma linha do `CASE`, cada `WHEN`/`THEN`/`ELSE` seguinte vira sua
+   própria linha alinhada logo depois de `CASE ` (mesma coluna do
+   primeiro `WHEN`), e `END` fecha alinhado com o próprio `CASE`. Vale
+   tanto num item de `SELECT` quanto numa condição de `WHERE`/`ON`/etc.
+7. Linha em branco separando `UNION ALL`/`UNION`/`EXCEPT`/`INTERSECT` do
    que vem antes/depois, e separando definições de CTEs entre si.
-7. CTEs encadeadas sem indentação: fechamento de uma e abertura da
+8. CTEs encadeadas sem indentação: fechamento de uma e abertura da
    próxima na mesma linha (`), proxima_cte AS (`).
-8. Comentários `--` standalone (sozinhos na linha) sempre na coluna 1, sem
+9. Comentários `--` standalone (sozinhos na linha) sempre na coluna 1, sem
    indentação — mesmo dentro de CTEs/subqueries. Comentários no fim de uma
    linha de código permanecem no fim dessa linha.
-9. Sem `;` no final do arquivo (a query é tratada como fragmento). Em
-   arquivos com múltiplos statements, o `;` entre eles é mantido — só o
-   último é removido.
+10. Sem `;` no final do arquivo (a query é tratada como fragmento). Em
+    arquivos com múltiplos statements, o `;` entre eles é mantido — só o
+    último é removido.
 
 Exemplo:
 
@@ -53,6 +62,29 @@ INNER JOIN ecm_assinatura
   GROUP BY ecm_conteudo.id,
            ecm_conteudo.nome
   ORDER BY ecm_conteudo.nome
+```
+
+`ON` com mais de uma condição quebra uma por linha (funciona igual se o
+`AND`/`OR` já vier entre parênteses no fonte ou não):
+
+```sql
+    SELECT issues.id
+      FROM issues
+INNER JOIN custom_values campo_nome
+        ON ( campo_nome.customized_id = issues.id
+         AND campo_nome.custom_field_id = 109 )
+```
+
+`CASE`/`WHEN`/`THEN` em blocos, um por linha (funciona tanto num item de
+`SELECT` quanto dentro de uma condição de `WHERE`):
+
+```sql
+     WHERE issues.status_id <> 42
+       AND CASE WHEN '${situacao}' = ''
+                THEN TRUE
+                WHEN '${situacao}' = 'a' -- Arquivados
+                THEN issues.status_id = 41
+           END
 ```
 
 CTEs encadeadas:
@@ -138,6 +170,17 @@ INSERT INTO ecm_conteudo (nome, categoria_id)
   PostgreSQL (`src/formatter.ts`, constante `NATIVE_FUNCTIONS`); funções
   de negócio do banco só são maiusculizadas se listadas em
   `competoSqlFormatter.additionalFunctions`.
+- `CASE` aninhado (um `CASE` dentro do `WHEN`/`THEN`/`ELSE` de outro) só
+  quebra em blocos no `CASE` mais externo — o(s) aninhado(s) renderizam
+  inline via `renderTokensInline`, igual a qualquer expressão comum.
+- Identificadores entre aspas encadeados (`"tabela"."coluna"`, comum em
+  SQL exportado por query builders como o do Laravel) são reconhecidos
+  como um único identificador qualificado, preservando o `.` — assim como
+  `tabela.coluna` sem aspas. Qualquer caractere não reconhecido por
+  nenhuma regra do tokenizer (ex.: `?` de bind parameter de log de query)
+  vira um token isolado em vez de ser descartado — o formatter nunca deve
+  apagar conteúdo do SQL original em silêncio, mesmo que não saiba
+  formatá-lo com o espaçamento ideal.
 - Subqueries usadas dentro de uma expressão (`WHERE x IN (SELECT ...)`,
   `SELECT (SELECT ...) AS foo`) são renderizadas em uma linha só — apenas
   subqueries na posição de `FROM`/`JOIN` (derived table) recebem

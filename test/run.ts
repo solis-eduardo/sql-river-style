@@ -229,6 +229,91 @@ const cases: Case[] = [
       '',
     ].join('\n'),
   },
+  {
+    name: 'identificadores entre aspas encadeados ("tabela"."coluna") preservam o ponto',
+    input: `select *
+       from "ecm_versoes"
+       inner join "ecm_arquivos"
+       on "ecm_versoes"."arquivo_id" = "ecm_arquivos"."id"
+       where "ecm_arquivos"."deleted_at" is null
+       and "ecm_arquivos"."anexo" = true`,
+    expected: [
+      '    SELECT *',
+      '      FROM "ecm_versoes"',
+      'INNER JOIN "ecm_arquivos"',
+      '        ON ( "ecm_versoes"."arquivo_id" = "ecm_arquivos"."id" )',
+      '     WHERE "ecm_arquivos"."deleted_at" IS NULL',
+      '       AND "ecm_arquivos"."anexo" = TRUE',
+      '',
+    ].join('\n'),
+  },
+  {
+    name: 'placeholder de bind parameter (?) do log de query do Laravel não é descartado',
+    input: `select count(*) as aggregate from "ecm_versoes" where "ecm_versoes"."disco" = ? and "ecm_versoes"."ativo" = ?`,
+    expected: [
+      'SELECT COUNT(*) as aggregate',
+      '  FROM "ecm_versoes"',
+      ' WHERE "ecm_versoes"."disco" = ?',
+      '   AND "ecm_versoes"."ativo" = ?',
+      '',
+    ].join('\n'),
+  },
+  {
+    name: 'CASE WHEN/THEN em blocos, um por linha, e END alinhado com o CASE',
+    input: `select a.id from tabela a where a.status <> 42 and case when x = '' then true when x = 'a' -- Arquivados
+       then a.status_id = 41 when x = 't' then b.is_closed is true and a.status_id not in (1,2) end`,
+    expected: [
+      'SELECT a.id',
+      '  FROM tabela a',
+      ' WHERE a.status <> 42',
+      "   AND CASE WHEN x = ''",
+      '            THEN TRUE',
+      "            WHEN x = 'a' -- Arquivados",
+      '            THEN a.status_id = 41',
+      "            WHEN x = 't'",
+      '            THEN b.is_closed IS TRUE AND a.status_id NOT IN (1, 2)',
+      '       END',
+      '',
+    ].join('\n'),
+  },
+  {
+    name: 'CASE dentro de item de SELECT (não só em condição) também quebra em blocos',
+    input: `select case when a.status = 1 then 'ativo' else 'inativo' end as status_desc, a.id from tabela a`,
+    expected: [
+      "SELECT CASE WHEN a.status = 1",
+      "            THEN 'ativo'",
+      "            ELSE 'inativo'",
+      '       END as status_desc,',
+      '       a.id',
+      '  FROM tabela a',
+      '',
+    ].join('\n'),
+  },
+  {
+    name: 'ON com múltiplas condições (parênteses já no fonte) quebra uma por linha, alinhada sob a primeira',
+    input: `select a.id from tabela_a a inner join tabela_b b on ( a.x = b.x and a.y = b.y )`,
+    expected: [
+      '    SELECT a.id',
+      '      FROM tabela_a a',
+      'INNER JOIN tabela_b b',
+      '        ON ( a.x = b.x',
+      '         AND a.y = b.y )',
+      '',
+    ].join('\n'),
+  },
+  {
+    name: 'ON sem parênteses no fonte (AND vira marker solto) é reincorporado e quebrado igual',
+    input: `select a.id from tabela_a a inner join tabela_b b on a.x = b.x and a.y = b.y where a.ativo = true`,
+    expected: [
+      '    SELECT a.id',
+      '      FROM tabela_a a',
+      'INNER JOIN tabela_b b',
+      '        ON ( a.x = b.x',
+      '         AND a.y = b.y )',
+      '     WHERE a.ativo = TRUE',
+      '',
+    ].join('\n'),
+  },
 ];
 
 let failures = 0;

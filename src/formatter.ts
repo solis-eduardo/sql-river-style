@@ -315,6 +315,7 @@ const JOIN_PREFIXES = new Set(['INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS']);
 function findMarkers(tokens: Token[]): Marker[] {
   const markers: Marker[] = [];
   let depth = 0;
+  let caseDepth = 0;
   let betweenDepth = -1;
   let seenFrom = false;
 
@@ -328,7 +329,19 @@ function findMarkers(tokens: Token[]): Marker[] {
       depth--;
       continue;
     }
-    if (depth !== 0 || t.type !== 'keyword') {
+    // CASE...END não usa parênteses, então precisa do próprio contador.
+    // Sem isso, um AND/OR dentro de um WHEN/THEN (ex.: `CASE WHEN a AND b
+    // THEN ...`) é confundido com o AND/OR de encadeamento do WHERE, e o
+    // CASE acaba partido ao meio em cláusulas soltas.
+    if (t.type === 'keyword' && t.upper === 'CASE') {
+      caseDepth++;
+      continue;
+    }
+    if (t.type === 'keyword' && t.upper === 'END' && caseDepth > 0) {
+      caseDepth--;
+      continue;
+    }
+    if (depth !== 0 || caseDepth !== 0 || t.type !== 'keyword') {
       continue;
     }
     const u = t.upper;
@@ -450,42 +463,133 @@ function findMarkers(tokens: Token[]): Marker[] {
   return markers;
 }
 
-function mergeOnConditions(lines: ClauseLine[]): ClauseLine[] {
-  const result: ClauseLine[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.kind === 'ON' || line.kind === 'USING') {
-      const body = line.body.slice();
-      let j = i + 1;
-      while (j < lines.length && (lines[j].kind === 'AND' || lines[j].kind === 'OR')) {
-        body.push({ type: 'keyword', text: lines[j].label, upper: lines[j].label });
-        body.push(...lines[j].body);
-        j++;
-      }
-      result.push({ ...line, body });
-      i = j - 1;
-    } else {
-      result.push(line);
-    }
-  }
-  return result;
-}
-
 function parseSelectBlock(tokens: Token[]): ClauseLine[] {
   const markers = findMarkers(tokens);
-  const raw: ClauseLine[] = markers.map((m, k) => {
+  return markers.map((m, k) => {
     const bodyStart = m.end;
     const bodyEnd = k + 1 < markers.length ? markers[k + 1].start : tokens.length;
     return { label: m.label, kind: m.kind, body: tokens.slice(bodyStart, bodyEnd) };
   });
-  return mergeOnConditions(raw);
 }
 
 function renderSelectBlock(clauseLines: ClauseLine[], indent: number, width: number, cfg: Cfg): string[] {
   const out: string[] = [];
-  for (const line of clauseLines) {
+  for (let i = 0; i < clauseLines.length; i++) {
+    const line = clauseLines[i];
+    if (line.kind === 'ON') {
+      // AND/OR que seguem um ON pertencem à condição do JOIN — agrupa e
+      // quebra uma linha por conector dentro dos parênteses, em vez de
+      // deixá-los virar linhas soltas de WHERE (ver renderOnGroup).
+      const condLines: ClauseLine[] = [];
+      let j = i + 1;
+      while (j < clauseLines.length && (clauseLines[j].kind === 'AND' || clauseLines[j].kind === 'OR')) {
+        condLines.push(clauseLines[j]);
+        j++;
+      }
+      out.push(...renderOnGroup(line, condLines, indent, width, cfg));
+      i = j - 1;
+      continue;
+    }
     out.push(...renderClauseLine(line, indent, width, cfg));
   }
+  return out;
+}
+
+/**
+ * Renderiza `ON` e o(s) AND/OR que vierem logo depois como um bloco só:
+ * primeira condição na mesma linha do `ON (`, cada AND/OR seguinte em sua
+ * própria linha (right-aligned entre si), fechando o `)` no fim da última.
+ * Sem AND/OR depois, cai no render de sempre (`ON ( cond )` em uma linha).
+ */
+interface AndOrSegment {
+  /** null no primeiro segmento; "AND"/"OR" nos seguintes. */
+  connector: string | null;
+  tokens: Token[];
+}
+
+/**
+ * Divide `tokens` em segmentos separados por AND/OR de profundidade 0 (sem
+ * entrar em parênteses nem em CASE...END, e sem contar o AND de um
+ * BETWEEN...AND como separador). É a mesma lógica de `findMarkers` para
+ * AND/OR, só que operando dentro de um único corpo de cláusula já extraído
+ * (o corpo do ON, tipicamente `( cond1 AND cond2 )` — depth 1 lá fora, mas
+ * depth 0 aqui dentro, pois quem chama já tirou os parênteses externos).
+ */
+function splitTopLevelAndOr(tokens: Token[]): AndOrSegment[] {
+  const segments: AndOrSegment[] = [{ connector: null, tokens: [] }];
+  let depth = 0;
+  let caseDepth = 0;
+  let betweenDepth = -1;
+
+  for (const t of tokens) {
+    if (t.text === '(') {
+      depth++;
+    } else if (t.text === ')') {
+      depth--;
+    } else if (t.type === 'keyword' && t.upper === 'CASE') {
+      caseDepth++;
+    } else if (t.type === 'keyword' && t.upper === 'END' && caseDepth > 0) {
+      caseDepth--;
+    } else if (depth === 0 && caseDepth === 0 && t.type === 'keyword' && t.upper === 'BETWEEN') {
+      betweenDepth = depth;
+    } else if (depth === 0 && caseDepth === 0 && t.type === 'keyword' && (t.upper === 'AND' || t.upper === 'OR')) {
+      if (t.upper === 'AND' && betweenDepth === depth) {
+        betweenDepth = -1;
+      } else {
+        segments.push({ connector: t.upper, tokens: [] });
+        continue;
+      }
+    }
+    segments[segments.length - 1].tokens.push(t);
+  }
+  return segments;
+}
+
+/**
+ * Renderiza `ON` — com uma condição só (`ON ( cond )`, uma linha) ou várias
+ * encadeadas por AND/OR (`ON ( cond1\n AND cond2 )`, uma linha por
+ * conector, alinhadas sob a primeira condição). `condLines` cobre o caso
+ * raro de ON sem parênteses no fonte, onde o AND/OR vira marker próprio em
+ * vez de ficar dentro do corpo do ON — reincorporado ao corpo antes de
+ * dividir, pra tratar os dois casos com o mesmo código.
+ */
+function renderOnGroup(onLine: ClauseLine, condLines: ClauseLine[], indent: number, width: number, cfg: Cfg): string[] {
+  const fullBody = onLine.body.slice();
+  for (const c of condLines) {
+    fullBody.push({ type: 'keyword', text: c.label, upper: c.label });
+    fullBody.push(...c.body);
+  }
+
+  const stripped = stripOuterParens(fullBody);
+  const segments = splitTopLevelAndOr(stripped);
+
+  const pad = ' '.repeat(Math.max(0, indent + width - onLine.label.length));
+  const connectorWidth = segments.length > 1 ? Math.max(...segments.slice(1).map((s) => s.connector!.length)) : 0;
+  const connectorBase = pad.length + 1;
+  const out: string[] = [];
+
+  segments.forEach((seg, idx) => {
+    const { comments, clean } = extractStandaloneComments(seg.tokens);
+    out.push(...comments);
+    const isLast = idx === segments.length - 1;
+    const prefix =
+      idx === 0
+        ? `${pad}${onLine.label} ( `
+        : `${' '.repeat(connectorBase + (connectorWidth - seg.connector!.length))}${seg.connector} `;
+
+    if (isLast) {
+      const { body, trailing } = splitTrailingComments(clean);
+      const lines = renderExpressionLines(body, prefix.length, cfg);
+      lines[0] = prefix + lines[0];
+      lines[lines.length - 1] += ` )${renderTrailingComments(trailing)}`;
+      out.push(...lines);
+    } else {
+      const lines = renderExpressionLines(clean, prefix.length, cfg);
+      lines[0] = prefix + lines[0];
+      out.push(...lines);
+    }
+  });
+
   return out;
 }
 
@@ -553,7 +657,10 @@ function renderClauseLine(line: ClauseLine, indent: number, width: number, cfg: 
     return out;
   }
 
-  out.push(`${pad}${line.label} ${renderTokensInline(clean, cfg)}`);
+  const prefix = `${pad}${line.label} `;
+  const lines = renderExpressionLines(clean, prefix.length, cfg);
+  lines[0] = prefix + lines[0];
+  out.push(...lines);
   return out;
 }
 
@@ -571,8 +678,11 @@ function pushItemList(
     out.push(...itemComments);
     const { body, trailing } = splitTrailingComments(itemClean);
     const suffix = idx < items.length - 1 ? ',' : '';
-    const rendered = renderTokensInline(body, cfg) + suffix + renderTrailingComments(trailing);
-    out.push(idx === 0 ? `${pad}${label} ${rendered}` : `${contentIndent}${rendered}`);
+    const prefix = idx === 0 ? `${pad}${label} ` : contentIndent;
+    const lines = renderExpressionLines(body, prefix.length, cfg);
+    lines[lines.length - 1] += suffix + renderTrailingComments(trailing);
+    lines[0] = prefix + lines[0];
+    out.push(...lines);
   });
 }
 
@@ -795,6 +905,19 @@ function computeUnaryFlags(tokens: Token[]): boolean[] {
   return flags;
 }
 
+/** Decide se `curr` cola sem espaço no que veio antes (`prev`), sem precisar do array de flags de unário completo — usado tanto no loop principal quanto pra costurar texto em volta de um bloco CASE renderizado à parte. */
+function needsNoSpaceBefore(curr: Token, prev: Token | undefined, prevIsUnary: boolean): boolean {
+  return (
+    curr.text === ')' ||
+    curr.text === ',' ||
+    curr.text === '::' ||
+    (curr.text === '(' && prev?.type === 'ident') ||
+    prev?.text === '(' ||
+    prev?.text === '::' ||
+    prevIsUnary
+  );
+}
+
 function renderTokensInline(tokens: Token[], cfg: Cfg): string {
   const unary = computeUnaryFlags(tokens);
   const castUpper = computeCastUppercaseIndexes(tokens);
@@ -825,17 +948,189 @@ function renderTokensInline(tokens: Token[], cfg: Cfg): string {
     }
 
     const prevIsUnary = !!prev && (prev.text === '-' || prev.text === '+') && unary[i - 1];
-    const noSpace =
-      t.text === ')' ||
-      t.text === ',' ||
-      t.text === '::' ||
-      (t.text === '(' && prev?.type === 'ident') ||
-      prev?.text === '(' ||
-      prev?.text === '::' ||
-      prevIsUnary;
-
-    out += noSpace ? text : ' ' + text;
+    out += needsNoSpaceBefore(t, prev, prevIsUnary) ? text : ' ' + text;
   }
 
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// CASE ... WHEN ... THEN ... ELSE ... END em blocos, um WHEN/THEN por linha
+// ---------------------------------------------------------------------------
+
+/**
+ * Acha o primeiro CASE...END de topo (profundidade de parênteses 0) em
+ * `tokens`, respeitando CASE aninhado (conta profundidade própria, já que
+ * CASE...END não usa parênteses). Devolve `null` se não houver CASE.
+ */
+function findTopLevelCase(tokens: Token[]): { start: number; end: number } | null {
+  let depth = 0;
+  let caseDepth = 0;
+  let start = -1;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.text === '(') {
+      depth++;
+      continue;
+    }
+    if (t.text === ')') {
+      depth--;
+      continue;
+    }
+    if (depth !== 0 || t.type !== 'keyword') {
+      continue;
+    }
+    if (t.upper === 'CASE') {
+      if (caseDepth === 0 && start === -1) {
+        start = i;
+      }
+      caseDepth++;
+      continue;
+    }
+    if (t.upper === 'END' && caseDepth > 0) {
+      caseDepth--;
+      if (caseDepth === 0) {
+        return { start, end: i + 1 };
+      }
+    }
+  }
+  return null;
+}
+
+interface CaseBranch {
+  when: Token[];
+  then: Token[];
+}
+
+/** Separa o miolo de um CASE (sem os tokens CASE/END) em expressão simples (forma `CASE expr WHEN ...`), branches WHEN/THEN e ELSE opcional. */
+function splitCaseBranches(inner: Token[]): { simpleExpr: Token[]; branches: CaseBranch[]; elseExpr: Token[] | null } {
+  let depth = 0;
+  let nestedCase = 0;
+  const markers: { kind: 'WHEN' | 'THEN' | 'ELSE'; index: number }[] = [];
+
+  for (let i = 0; i < inner.length; i++) {
+    const t = inner[i];
+    if (t.text === '(') {
+      depth++;
+      continue;
+    }
+    if (t.text === ')') {
+      depth--;
+      continue;
+    }
+    if (depth !== 0 || t.type !== 'keyword') {
+      continue;
+    }
+    if (t.upper === 'CASE') {
+      nestedCase++;
+      continue;
+    }
+    if (t.upper === 'END' && nestedCase > 0) {
+      nestedCase--;
+      continue;
+    }
+    if (nestedCase > 0) {
+      continue;
+    }
+    if (t.upper === 'WHEN' || t.upper === 'THEN' || t.upper === 'ELSE') {
+      markers.push({ kind: t.upper, index: i });
+    }
+  }
+
+  const simpleExpr = inner.slice(0, markers.length > 0 ? markers[0].index : inner.length);
+  const branches: CaseBranch[] = [];
+  let elseExpr: Token[] | null = null;
+
+  markers.forEach((m, k) => {
+    const segEnd = k + 1 < markers.length ? markers[k + 1].index : inner.length;
+    const seg = inner.slice(m.index + 1, segEnd);
+    if (m.kind === 'WHEN') {
+      branches.push({ when: seg, then: [] });
+    } else if (m.kind === 'THEN') {
+      if (branches.length > 0) {
+        branches[branches.length - 1].then = seg;
+      }
+    } else {
+      elseExpr = seg;
+    }
+  });
+
+  return { simpleExpr, branches, elseExpr };
+}
+
+/**
+ * Renderiza um CASE...END em blocos: primeiro WHEN gruda na linha do CASE,
+ * cada THEN/WHEN seguinte vira sua própria linha alinhada sob a coluna logo
+ * depois de "CASE " (5 caracteres — WHEN/THEN/ELSE têm o mesmo tamanho, não
+ * precisa de padding extra), e END fecha alinhado com o próprio CASE.
+ * CASE aninhado dentro de um branch (raro) renderiza inline via
+ * renderTokensInline — só o CASE mais externo ganha o layout em blocos.
+ */
+function renderCaseBlock(caseTokens: Token[], caseColumn: number, cfg: Cfg): string[] {
+  const inner = caseTokens.slice(1, caseTokens.length - 1);
+  const { simpleExpr, branches, elseExpr } = splitCaseBranches(inner);
+  const branchColumn = caseColumn + 'CASE '.length;
+  const branchPad = ' '.repeat(branchColumn);
+
+  const lines: string[] = [];
+  let firstLine = 'CASE';
+  if (simpleExpr.length > 0) {
+    firstLine += ' ' + renderTokensInline(simpleExpr, cfg);
+  }
+
+  if (branches.length === 0) {
+    lines.push(firstLine);
+  }
+
+  branches.forEach((branch, idx) => {
+    const whenText = renderTokensInline(branch.when, cfg);
+    if (idx === 0) {
+      lines.push(`${firstLine} WHEN ${whenText}`);
+    } else {
+      lines.push(`${branchPad}WHEN ${whenText}`);
+    }
+    lines.push(`${branchPad}THEN ${renderTokensInline(branch.then, cfg)}`);
+  });
+
+  if (elseExpr && elseExpr.length > 0) {
+    lines.push(`${branchPad}ELSE ${renderTokensInline(elseExpr, cfg)}`);
+  }
+
+  lines.push(`${' '.repeat(caseColumn)}END`);
+  return lines;
+}
+
+/**
+ * Renderiza `tokens` como uma ou mais linhas, quebrando em blocos quando há
+ * um CASE...END de topo — usado nos mesmos lugares onde antes só se chamava
+ * `renderTokensInline` (itens de lista, corpo de cláusula genérica).
+ * `baseColumn` é a coluna (0-indexada) onde `tokens` começa a ser impresso,
+ * necessária pra alinhar WHEN/THEN/END corretamente.
+ */
+function renderExpressionLines(tokens: Token[], baseColumn: number, cfg: Cfg): string[] {
+  const span = findTopLevelCase(tokens);
+  if (!span) {
+    return [renderTokensInline(tokens, cfg)];
+  }
+
+  const before = tokens.slice(0, span.start);
+  const caseTokens = tokens.slice(span.start, span.end);
+  const after = tokens.slice(span.end);
+
+  const beforeText = before.length > 0 ? renderTokensInline(before, cfg) : '';
+  const caseKeyword = caseTokens[0];
+  const gapBeforeSpace = beforeText.length > 0 && !needsNoSpaceBefore(caseKeyword, before[before.length - 1], false);
+  const caseColumn = baseColumn + beforeText.length + (gapBeforeSpace ? 1 : 0);
+
+  const caseLines = renderCaseBlock(caseTokens, caseColumn, cfg);
+  caseLines[0] = beforeText + (gapBeforeSpace ? ' ' : '') + caseLines[0];
+
+  if (after.length > 0) {
+    const afterText = renderTokensInline(after, cfg);
+    const gapAfterSpace = !needsNoSpaceBefore(after[0], caseTokens[caseTokens.length - 1], false);
+    caseLines[caseLines.length - 1] += (gapAfterSpace ? ' ' : '') + afterText;
+  }
+
+  return caseLines;
 }

@@ -51,21 +51,33 @@ export const KEYWORD_SET = new Set([
   'UNKNOWN', 'DEFAULT', 'COLLATE', 'CONFLICT', 'DO', 'NOTHING', 'FOR', 'OF',
 ]);
 
+/** Um segmento de identificador: `nome` ou `"nome com espaço/maiúsculas"`. */
+const IDENT_SEGMENT = /(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)/.source;
+
 const TOKEN_REGEX = new RegExp(
   [
     /--[^\n]*/.source, // comentário de linha
     /\/\*[\s\S]*?\*\//.source, // comentário de bloco
     /'(?:[^']|'')*'/.source, // string literal ('' escapa aspa simples)
-    /"(?:[^"]|"")*"/.source, // identificador entre aspas
     /\d+\.\d+\b/.source, // número decimal
     /\d+\b/.source, // número inteiro
     /::/.source,
     /<>|<=|>=|!=|\|\|/.source,
     /[(),;]/.source,
     /[=<>+\-*/%]/.source,
-    /[A-Za-z_][A-Za-z0-9_$]*(?:\.(?:[A-Za-z_][A-Za-z0-9_$]*|\*))*/.source, // identificador, aceita tabela.coluna e tabela.*
+    // identificador — aceita tabela.coluna, tabela.*, e qualquer combinação de
+    // segmentos com/sem aspas: "tabela"."coluna", tabela."coluna", "tabela".coluna.
+    // Precisa vir antes do catch-all para não deixar o "." entre dois
+    // identificadores entre aspas cair nele (regra 3: tabela.coluna por extenso).
+    `${IDENT_SEGMENT}(?:\\.(?:${IDENT_SEGMENT}|\\*))*`,
     /\n/.source,
     /[ \t\r]+/.source,
+    // Catch-all: qualquer caractere não reconhecido pelas regras acima (`?`
+    // de bind parameter, operadores específicos do Postgres como `?|`/`@>`,
+    // etc.) vira um token 'op' isolado em vez de ser silenciosamente
+    // descartado — nunca perder conteúdo do SQL original é mais importante
+    // que reconhecer todo operador possível.
+    /[^]/.source,
   ].join('|'),
   'g',
 );
