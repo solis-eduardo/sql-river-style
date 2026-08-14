@@ -187,19 +187,20 @@ function formatQuery(tokens: Token[], indent: number, cfg: Cfg): string[] {
 
       const prefix = cteIndex === 0 ? `${' '.repeat(indent)}${withLabel} ` : `${' '.repeat(indent)}), `;
       lines.push(`${prefix}${header} AS (`);
-      lines.push('');
       lines.push(...formatQuery(bodyTokens, indent + cfg.indentSize, cfg));
-      lines.push('');
 
       cteIndex++;
       if (tokens[cursor]?.text === ',') {
+        // Regra 6: linha em branco só separando uma definição de CTE da
+        // próxima — não no topo/rodapé de cada corpo (a primeira CTE cola
+        // no `AS (` e a última cola no fechamento).
+        lines.push('');
         cursor++;
         continue;
       }
       break;
     }
     lines.push(`${' '.repeat(indent)})`);
-    lines.push('');
   }
 
   lines.push(...formatSelectChain(tokens.slice(cursor), indent, cfg));
@@ -593,9 +594,8 @@ function trySubquery(tokens: Token[], indent: number, cfg: Cfg): string[] | null
   const aliasTokens = tokens.slice(closeIdx + 1);
   const innerLines = formatQuery(inner, indent + cfg.indentSize, cfg);
 
-  const result: string[] = ['(', ''];
+  const result: string[] = ['('];
   result.push(...innerLines);
-  result.push('');
   const aliasText = aliasTokens.length ? ' ' + renderTokensInline(aliasTokens, cfg) : '';
   result.push(`${' '.repeat(indent)})${aliasText}`);
   return result;

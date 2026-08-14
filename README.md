@@ -59,18 +59,14 @@ CTEs encadeadas:
 
 ```sql
 WITH primeira_cte AS (
-
     SELECT a.id,
            a.valor::NUMERIC
       FROM tabela_a a
 
 ), segunda_cte AS (
-
     SELECT b.id
       FROM tabela_b b
-
 )
-
 SELECT primeira_cte.id
   FROM primeira_cte
 ```
