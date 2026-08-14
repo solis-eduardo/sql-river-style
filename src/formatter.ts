@@ -191,16 +191,18 @@ function formatQuery(tokens: Token[], indent: number, cfg: Cfg): string[] {
 
       cteIndex++;
       if (tokens[cursor]?.text === ',') {
-        // Regra 6: linha em branco só separando uma definição de CTE da
-        // próxima — não no topo/rodapé de cada corpo (a primeira CTE cola
-        // no `AS (` e a última cola no fechamento).
-        lines.push('');
+        // CTEs encadeadas colam direto: sem linha em branco entre o corpo
+        // de uma CTE e o `), proxima_cte AS (` da seguinte (essa linha já
+        // é o próprio separador visual).
         cursor++;
         continue;
       }
       break;
     }
     lines.push(`${' '.repeat(indent)})`);
+    // Regra 6: linha em branco separando o bloco de CTEs (WITH ... )) do
+    // statement que as consome (SELECT/INSERT/UPDATE/DELETE).
+    lines.push('');
   }
 
   lines.push(...formatSelectChain(tokens.slice(cursor), indent, cfg));

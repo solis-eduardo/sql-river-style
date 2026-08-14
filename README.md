@@ -48,10 +48,12 @@ an internal tool before going public.
    first `WHEN`), and `END` closes aligned with `CASE` itself. Applies
    both to a `SELECT` item and to a `WHERE`/`ON`/etc. condition.
 7. Blank line separating `UNION ALL`/`UNION`/`EXCEPT`/`INTERSECT` from
-   what comes before/after, and separating CTE definitions from each
-   other.
-8. Chained CTEs with no extra indentation: closing one and opening the
-   next on the same line (`), next_cte AS (`).
+   what comes before/after, and separating a `WITH` block's CTEs from
+   the statement that consumes them (the `SELECT`/`INSERT`/`UPDATE`/
+   `DELETE` right after the closing `)`).
+8. Chained CTEs with no extra indentation and no blank line between
+   them: closing one and opening the next on the same line
+   (`), next_cte AS (`).
 9. Standalone `--` comments (alone on their line) always sit at column
    1, unindented — even inside CTEs/subqueries. Comments at the end of a
    code line stay at the end of that line.
@@ -106,14 +108,18 @@ WITH primeira_cte AS (
     SELECT a.id,
            a.valor::NUMERIC
       FROM tabela_a a
-
 ), segunda_cte AS (
     SELECT b.id
       FROM tabela_b b
 )
-SELECT primeira_cte.id
-  FROM primeira_cte
+
+    SELECT primeira_cte.id
+      FROM primeira_cte
 ```
+
+(The final `SELECT` gets 4 leading spaces even without a `JOIN` around —
+that's rule 1's minimum-4-spaces-before-`SELECT` kicking in, since
+`FROM` alone would only ask for 2.)
 
 Subqueries in `FROM`/`JOIN` are formatted recursively, with their own
 indentation and their own river alignment (independent of the outer
@@ -173,6 +179,15 @@ INSERT INTO ecm_conteudo (nome, categoria_id)
   `RETURNING`. Other statements (DDL, `MERGE`, session commands...) are
   out of scope: they only get their keywords uppercased, without river
   restructuring.
+- **Function/procedure definitions are not supported at all** —
+  `CREATE FUNCTION`/`CREATE PROCEDURE` bodies wrapped in dollar-quoting
+  (`AS $$ ... $$`, `AS $tag$ ... $tag$`) aren't recognized by the
+  tokenizer, which doesn't know `$$` as a string delimiter. Instead of
+  degrading gracefully like other DDL, this actively mangles the
+  output — the `$$` gets split into stray tokens, whitespace inside the
+  body collapses, and the file's trailing `;` may be stripped even
+  though it's semantically required there. Don't run this formatter on
+  files containing function/procedure definitions for now.
 - `INSERT ... ON CONFLICT` isn't specifically modeled — `ON CONFLICT
   (...) DO NOTHING` stays concatenated at the end of the `VALUES` line;
   in `ON CONFLICT (...) DO UPDATE SET ...` the `SET` gets its own line
@@ -295,9 +310,12 @@ ainda era uma ferramenta interna, antes de se tornar público.
    primeiro `WHEN`), e `END` fecha alinhado com o próprio `CASE`. Vale
    tanto num item de `SELECT` quanto numa condição de `WHERE`/`ON`/etc.
 7. Linha em branco separando `UNION ALL`/`UNION`/`EXCEPT`/`INTERSECT` do
-   que vem antes/depois, e separando definições de CTEs entre si.
-8. CTEs encadeadas sem indentação: fechamento de uma e abertura da
-   próxima na mesma linha (`), proxima_cte AS (`).
+   que vem antes/depois, e separando o bloco de CTEs de um `WITH` do
+   statement que as consome (o `SELECT`/`INSERT`/`UPDATE`/`DELETE` logo
+   após o fechamento `)`).
+8. CTEs encadeadas sem indentação e sem linha em branco entre elas:
+   fechamento de uma e abertura da próxima na mesma linha
+   (`), proxima_cte AS (`).
 9. Comentários `--` standalone (sozinhos na linha) sempre na coluna 1, sem
    indentação — mesmo dentro de CTEs/subqueries. Comentários no fim de uma
    linha de código permanecem no fim dessa linha.
@@ -351,14 +369,18 @@ WITH primeira_cte AS (
     SELECT a.id,
            a.valor::NUMERIC
       FROM tabela_a a
-
 ), segunda_cte AS (
     SELECT b.id
       FROM tabela_b b
 )
-SELECT primeira_cte.id
-  FROM primeira_cte
+
+    SELECT primeira_cte.id
+      FROM primeira_cte
 ```
+
+(O `SELECT` final ganha 4 espaços à esquerda mesmo sem `JOIN` por perto —
+é a regra 1, o mínimo de 4 espaços antes do `SELECT`, entrando em ação,
+já que sozinho o `FROM` só pediria 2.)
 
 Subqueries em `FROM`/`JOIN` são formatadas recursivamente, com indentação
 própria e seu próprio alinhamento de river (independente do escopo
@@ -419,6 +441,15 @@ INSERT INTO ecm_conteudo (nome, categoria_id)
   `RETURNING`. Outros statements (DDL, `MERGE`, comandos de sessão...)
   ficam fora do escopo: só têm as palavras-chave maiusculizadas, sem
   reestruturação em river style.
+- **Definição de função/procedure não é suportada de jeito nenhum** —
+  corpos de `CREATE FUNCTION`/`CREATE PROCEDURE` entre dollar-quoting
+  (`AS $$ ... $$`, `AS $tag$ ... $tag$`) não são reconhecidos pelo
+  tokenizer, que não sabe que `$$` é um delimitador de string. Em vez
+  de degradar bem como o resto do DDL, isso bagunça a saída de verdade —
+  o `$$` é quebrado em tokens soltos, espaços dentro do corpo colapsam,
+  e o `;` final do arquivo pode ser removido mesmo sendo
+  semanticamente obrigatório ali. Por enquanto, não rode o formatter em
+  arquivos com definição de função/procedure.
 - `INSERT ... ON CONFLICT` não é modelado especificamente — `ON CONFLICT
   (...) DO NOTHING` fica concatenado no fim da linha de `VALUES`; em
   `ON CONFLICT (...) DO UPDATE SET ...` o `SET` ganha sua própria linha
