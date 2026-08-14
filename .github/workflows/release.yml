@@ -42,14 +42,19 @@ jobs:
   publish-marketplace:
     needs: build
     runs-on: ubuntu-latest
-    # Só roda se o secret VSCE_PAT existir no repo (Settings > Secrets and
-    # variables > Actions). Sem ele, esse job é pulado e a Release do
-    # GitHub ainda é criada normalmente pelo job acima.
-    if: ${{ secrets.VSCE_PAT != '' }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: vsix
-      - run: npx @vscode/vsce publish --packagePath sql-river-style.vsix -p "$VSCE_PAT"
+      - name: Publish to VS Code Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        # Só publica se o secret VSCE_PAT existir no repo (Settings > Secrets
+        # and variables > Actions). Sem ele, esse passo só avisa e sai — não
+        # quebra o workflow nem impede a GitHub Release do outro job.
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "VSCE_PAT não configurado — pulando publish no Marketplace."
+            exit 0
+          fi
+          npx @vscode/vsce publish --packagePath sql-river-style.vsix -p "$VSCE_PAT"
