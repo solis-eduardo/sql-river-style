@@ -1,0 +1,62 @@
+stages:
+  - test
+  - build
+  - release
+
+test:
+  stage: test
+  image: node:20
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  script:
+    - npm ci
+    - npm test
+
+# Empacota a extensão (.vsix) e publica no Generic Package Registry do
+# projeto sempre que uma tag é criada (ex.: v0.1.0).
+build_vsix:
+  stage: build
+  image: node:20
+  rules:
+    - if: $CI_COMMIT_TAG
+  variables:
+    VSIX_NAME: competo-sql-formatter-${CI_COMMIT_TAG}.vsix
+    PACKAGE_REGISTRY_URL: '${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/vscode-extension/${CI_COMMIT_TAG}'
+  script:
+    - npm ci
+    - npx @vscode/vsce package --out "${VSIX_NAME}"
+    - 'curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "${VSIX_NAME}" "${PACKAGE_REGISTRY_URL}/${VSIX_NAME}"'
+  artifacts:
+    paths:
+      - '*.vsix'
+
+# Cria a Release do GitLab pra essa tag, com o .vsix publicado acima como
+# asset pra download — ver "Releases" na página do projeto.
+create_release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG
+  needs:
+    - build_vsix
+  variables:
+    VSIX_NAME: competo-sql-formatter-${CI_COMMIT_TAG}.vsix
+    PACKAGE_REGISTRY_URL: '${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/vscode-extension/${CI_COMMIT_TAG}'
+  script:
+    - echo "Publicando release ${CI_COMMIT_TAG}"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: 'Competo SQL Formatter $CI_COMMIT_TAG'
+    description: |
+      Instalação: baixe o .vsix abaixo e, no VSCode, Extensões (Ctrl+Shift+X)
+      → "..." → "Install from VSIX...". Ou via terminal:
+      `code --install-extension ${VSIX_NAME}`.
+
+      Ver commits desta tag para o detalhe das mudanças.
+    assets:
+      links:
+        - name: '${VSIX_NAME}'
+          url: '${PACKAGE_REGISTRY_URL}/${VSIX_NAME}'
+          link_type: 'package'
