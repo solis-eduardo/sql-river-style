@@ -1,0 +1,55 @@
+name: Release
+
+# Disparado por tag (v1.0.0, v1.2.3...). Empacota o .vsix, cria a GitHub
+# Release com ele anexado e, se o secret VSCE_PAT estiver configurado,
+# publica no VS Code Marketplace também.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm test
+      - run: npx @vscode/vsce package --out sql-river-style.vsix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: sql-river-style.vsix
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: sql-river-style.vsix
+          generate_release_notes: true
+
+  publish-marketplace:
+    needs: build
+    runs-on: ubuntu-latest
+    # Só roda se o secret VSCE_PAT existir no repo (Settings > Secrets and
+    # variables > Actions). Sem ele, esse job é pulado e a Release do
+    # GitHub ainda é criada normalmente pelo job acima.
+    if: ${{ secrets.VSCE_PAT != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix
+      - run: npx @vscode/vsce publish --packagePath sql-river-style.vsix -p "$VSCE_PAT"
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
