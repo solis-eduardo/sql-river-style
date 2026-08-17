@@ -49,4 +49,26 @@ jobs:
       - name: Publish to VS Code Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx @vscode/vsce publish --packagePath sql-river-style.vsix -p "$VSCE_PAT"
+        # O Marketplace (Azure DevOps Gallery) às vezes demora a responder e
+        # o `vsce publish` estoura timeout do lado do cliente — mesmo assim o
+        # upload pode ter ido adiante do lado do servidor (já aconteceu: uma
+        # tentativa "falhou" por timeout, mas a versão apareceu publicada
+        # minutos depois). Por isso: tenta de novo com backoff em timeout, e
+        # trata "already exists" como sucesso (prova de que uma tentativa
+        # anterior já publicou, só não confirmou a tempo) em vez de falhar
+        # de novo.
+        run: |
+          for attempt in 1 2 3; do
+            if output=$(npx @vscode/vsce publish --packagePath sql-river-style.vsix -p "$VSCE_PAT" 2>&1); then
+              echo "$output"
+              exit 0
+            fi
+            echo "$output"
+            if echo "$output" | grep -qi "already exists"; then
+              echo "Já publicado por uma tentativa anterior (client-side timeout, mas o upload foi adiante) — tratando como sucesso."
+              exit 0
+            fi
+            echo "Tentativa $attempt falhou, aguardando antes de tentar de novo..."
+            sleep 60
+          done
+          exit 1
