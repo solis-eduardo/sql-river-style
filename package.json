@@ -2,7 +2,7 @@
   "name": "sql-river-style",
   "displayName": "SQL River Style",
   "description": "Opinionated SQL formatter with right-aligned (\"river style\") keywords, one column per line, and structured CTEs/JOINs/CASE blocks.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "EduardoBraun",
   "private": true,
   "license": "MIT",
@@ -67,8 +67,9 @@
     "compile": "tsc -p ./",
     "watch": "tsc -w -p ./",
     "pretest": "npm run compile",
-    "test": "node ./out/test/run.js",
-    "smoke": "node ./out/test/smoke.js"
+    "test": "node ./out/test/examples.js",
+    "smoke": "node ./out/test/smoke.js",
+    "generate-examples": "npm run compile && node ./out/test/generate-examples.js"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -82,9 +82,35 @@ const RESERVED_KEYWORDS = new Set([
 /** Um identificador entre aspas só precisa delas se tiver maiúscula, espaço, acento ou outro caractere fora de `[a-z0-9_]`, ou se colidir com uma palavra reservada do Postgres. */
 const SAFE_TO_UNQUOTE = /^[a-z_][a-z0-9_]*$/;
 
-function unquoteIfSafe(segment: string): string {
+/** Nome "cru" (sem aspas) de identificador -> forma final: sem aspas se for
+ * seguro (minúsculo/dígito/`_`, sem colidir com reservada), ou entre aspas
+ * duplas (escapando `"` interno) senão. É o inverso de `normalizeIdentSegment`
+ * pro caso sem aspas: aqui parte de um nome qualquer e decide se PRECISA de
+ * aspas, em vez de decidir se pode TIRAR aspas que já estavam lá. Usado pelo
+ * formatter pra alias que chegam como string literal (`AS 'Foo'`, convenção
+ * do SQL Server) e precisam virar identificador de verdade. */
+export function quoteIdentIfNeeded(name: string): string {
+  return SAFE_TO_UNQUOTE.test(name) && !RESERVED_KEYWORDS.has(name.toUpperCase()) ? name : `"${name.replace(/"/g, '""')}"`;
+}
+
+/** Normaliza um segmento (qualificado ou não) de identificador: um segmento
+ * SEM aspas no fonte é dobrado pra minúsculo — é o que o Postgres faz com
+ * identificador sem aspas (`Tabela` sem aspas é exatamente `tabela` pro
+ * banco), então preservar a caixa original seria mostrar uma "caixa" que
+ * nunca existiu de verdade pro banco. Exceção: um segmento que bate com uma
+ * palavra reservada do Postgres (`RESERVED_KEYWORDS`) nunca é dobrado —
+ * `CREATE`/`TABLE`/`DROP`/... não são identificadores de dado (nem
+ * poderiam ser sem aspas, são reservadas de verdade), então o "Postgres
+ * dobra identificador sem aspas" nem se aplica; são palavras de DDL fora
+ * do escopo deste formatter (caem no fallback genérico — ver
+ * `formatStatement`), e mexer na caixa delas seria arriscar sem necessidade.
+ * Um segmento COM aspas no fonte nunca tem sua caixa/conteúdo alterado —
+ * aspas são exatamente como se preserva maiúscula/espaço/acento no
+ * Postgres — mas as aspas em si são removidas quando ficam supérfluas
+ * (minúsculo/dígito/`_`, sem colidir com reservada). */
+function normalizeIdentSegment(segment: string): string {
   if (segment[0] !== '"') {
-    return segment;
+    return RESERVED_KEYWORDS.has(segment.toUpperCase()) ? segment : segment.toLowerCase();
   }
   const inner = segment.slice(1, -1).replace(/""/g, '"');
   return SAFE_TO_UNQUOTE.test(inner) && !RESERVED_KEYWORDS.has(inner.toUpperCase()) ? inner : segment;
@@ -122,17 +148,17 @@ function splitQualifiedSegments(raw: string): string[] {
 }
 
 /**
- * Tira as aspas de cada segmento entre aspas de um identificador
- * (qualificado ou não) quando elas não fazem falta — minúsculo, sem
- * espaço/acento e sem colidir com keyword reservada. `"tabela"."coluna"`
- * vira `tabela.coluna`; `"Tabela"."coluna"` vira `"Tabela".coluna` (só o
- * segundo segmento é seguro de destrinchar).
+ * Normaliza cada segmento (entre pontos) de um identificador, qualificado
+ * ou não: dobra pra minúsculo os que não tinham aspas no fonte (regra do
+ * Postgres — identificador sem aspas é sempre case-folded), e tira as
+ * aspas dos que tinham quando elas não fazem falta — minúsculo, sem
+ * espaço/acento e sem colidir com keyword reservada. `Tabela.Coluna` vira
+ * `tabela.coluna`; `"Tabela"."coluna"` vira `"Tabela".coluna` (só o
+ * segundo segmento é seguro de destrinchar); `tabela."Coluna Com Espaço"`
+ * fica igual (primeiro segmento já minúsculo, segundo precisa das aspas).
  */
 function normalizeQualifiedIdent(raw: string): string {
-  if (!raw.includes('"')) {
-    return raw;
-  }
-  return splitQualifiedSegments(raw).map(unquoteIfSafe).join('.');
+  return splitQualifiedSegments(raw).map(normalizeIdentSegment).join('.');
 }
 
 /** Um segmento de identificador: `nome` ou `"nome com espaço/maiúsculas"`. */
@@ -147,6 +173,13 @@ const TOKEN_REGEX = new RegExp(
     /\d+\b/.source, // número inteiro
     /::/.source,
     /<>|<=|>=|!=|\|\|/.source,
+    // Parâmetro posicional do PL/pgSQL (`$1`, `$2`...) — precisa vir antes
+    // do catch-all e antes do padrão de dollar-quote logo abaixo: um `$`
+    // seguido de dígito não bate com a tag de dollar-quote (que exige letra
+    // depois do `$`), então sem essa regra ele caía no catch-all como um
+    // `$` solto de 1 caractere, e o código de dollar-quote tratava esse `$`
+    // isolado como se fosse uma tag `$$` vazia — corrompendo `$1` em `$$ 1`.
+    /\$\d+/.source,
     // Delimitador de dollar-quoting de corpo de função/procedure (`$$`,
     // `$BODY$`...). Tolera espaço acidental depois do primeiro `$` (`$
     // BODY$`), normalizado na saída — ver `tokenize`. Precisa vir antes do
@@ -219,6 +252,12 @@ export function tokenize(source: string): Token[] {
       continue;
     }
     if (raw[0] === '$') {
+      if (/^\$\d+$/.test(raw)) {
+        // Parâmetro posicional ($1, $2...) — não é delimitador de corpo,
+        // é um valor/identificador comum dentro de uma expressão.
+        tokens.push({ type: 'ident', text: raw, upper: raw.toUpperCase() });
+        continue;
+      }
       // Normaliza espaço interno acidental (`$ BODY$` -> `$BODY$`) — a tag
       // em si (maiúsculas/minúsculas) é preservada como está.
       const tag = raw.slice(1, -1).trim();
@@ -239,7 +278,14 @@ export function tokenize(source: string): Token[] {
       const first = isQualified ? raw.slice(0, raw.indexOf('.')) : raw;
       const upper = first.toUpperCase();
       const isKeyword = !isQualified && KEYWORD_SET.has(upper);
-      tokens.push({ type: isKeyword ? 'keyword' : 'ident', text: raw, upper: raw.toUpperCase() });
+      if (isKeyword) {
+        tokens.push({ type: 'keyword', text: raw, upper });
+      } else {
+        // Identificador sem aspas no fonte — dobra pra minúsculo (ver
+        // `normalizeIdentSegment`), igual o Postgres faz internamente.
+        const normalized = normalizeQualifiedIdent(raw);
+        tokens.push({ type: 'ident', text: normalized, upper: normalized.toUpperCase() });
+      }
       continue;
     }
     // operadores remanescentes (::, <>, <=, >=, !=, ||, =, <, >, +, -, *, /, %)
