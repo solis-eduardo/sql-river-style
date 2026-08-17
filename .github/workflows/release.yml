@@ -1,8 +1,8 @@
 name: Release
 
 # Disparado por tag (v1.0.0, v1.2.3...). Empacota o .vsix, cria a GitHub
-# Release com ele anexado e, se o secret VSCE_PAT estiver configurado,
-# publica no VS Code Marketplace também.
+# Release com ele anexado e publica no VS Code Marketplace (secret VSCE_PAT
+# já configurado em Settings > Secrets and variables > Actions).
 on:
   push:
     tags:
@@ -49,12 +49,4 @@ jobs:
       - name: Publish to VS Code Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        # Só publica se o secret VSCE_PAT existir no repo (Settings > Secrets
-        # and variables > Actions). Sem ele, esse passo só avisa e sai — não
-        # quebra o workflow nem impede a GitHub Release do outro job.
-        run: |
-          if [ -z "$VSCE_PAT" ]; then
-            echo "VSCE_PAT não configurado — pulando publish no Marketplace."
-            exit 0
-          fi
-          npx @vscode/vsce publish --packagePath sql-river-style.vsix -p "$VSCE_PAT"
+        run: npx @vscode/vsce publish --packagePath sql-river-style.vsix -p "$VSCE_PAT"

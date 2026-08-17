@@ -16,7 +16,8 @@ export type TokenType =
   | 'punct'
   | 'op'
   | 'comment'
-  | 'blockComment';
+  | 'blockComment'
+  | 'dollarQuote';
 
 export interface Token {
   type: TokenType;
@@ -146,6 +147,13 @@ const TOKEN_REGEX = new RegExp(
     /\d+\b/.source, // número inteiro
     /::/.source,
     /<>|<=|>=|!=|\|\|/.source,
+    // Delimitador de dollar-quoting de corpo de função/procedure (`$$`,
+    // `$BODY$`...). Tolera espaço acidental depois do primeiro `$` (`$
+    // BODY$`), normalizado na saída — ver `tokenize`. Precisa vir antes do
+    // catch-all: sem isso, cada `$`/tag vira token solto e o par
+    // abre/fecha nunca é reconhecido, deixando o corpo da função
+    // impossível de formatar (ver README, "Definição de função").
+    /\$[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\$|\$\$/.source,
     /[(),;]/.source,
     /[=<>+\-*/%]/.source,
     // identificador — aceita tabela.coluna, tabela.*, e qualquer combinação de
@@ -208,6 +216,14 @@ export function tokenize(source: string): Token[] {
     if (raw[0] === '"') {
       const normalized = normalizeQualifiedIdent(raw);
       tokens.push({ type: 'ident', text: normalized, upper: normalized.toUpperCase() });
+      continue;
+    }
+    if (raw[0] === '$') {
+      // Normaliza espaço interno acidental (`$ BODY$` -> `$BODY$`) — a tag
+      // em si (maiúsculas/minúsculas) é preservada como está.
+      const tag = raw.slice(1, -1).trim();
+      const normalized = `$${tag}$`;
+      tokens.push({ type: 'dollarQuote', text: normalized, upper: normalized.toUpperCase() });
       continue;
     }
     if (/^\d/.test(raw)) {

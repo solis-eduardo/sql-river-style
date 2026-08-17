@@ -373,6 +373,125 @@ WHERE ecm_versoes.deleted_at IS NULL
       '',
     ].join('\n'),
   },
+  {
+    name: 'CREATE FUNCTION: DECLARE/BEGIN/IF-ELSE/CASE em atribuição/FOR...LOOP com UPDATE/RETURN, corpo $$...$$',
+    input: `create or replace function calculate_discount(p_customer_id integer, p_amount numeric) returns numeric as $$
+declare
+v_tier text;
+v_discount numeric;
+begin
+-- busca o tier do cliente
+select tier into v_tier from customers where id = p_customer_id;
+if (v_tier = 'gold') then
+v_discount := 0.20;
+else
+v_discount := case when p_amount > 1000 then 0.10 else 0.05 end;
+end if;
+for v_order_id in (select id from orders where customer_id = p_customer_id order by id) loop
+update orders set discount = v_discount where id = v_order_id;
+end loop;
+return p_amount * (1 - v_discount);
+end;
+$$ language plpgsql;`,
+    expected: [
+      'CREATE OR REPLACE FUNCTION calculate_discount (p_customer_id integer, p_amount numeric)',
+      'RETURNS numeric',
+      'AS $$',
+      'DECLARE',
+      '    v_tier text;',
+      '    v_discount numeric;',
+      'BEGIN',
+      '    -- busca o tier do cliente',
+      '    SELECT tier INTO v_tier',
+      '      FROM customers',
+      '     WHERE id = p_customer_id;',
+      '',
+      "    IF ( v_tier = 'gold' )",
+      '    THEN',
+      '        v_discount := 0.20;',
+      '    ELSE',
+      '        v_discount := CASE WHEN p_amount > 1000',
+      '                           THEN 0.10',
+      '                           ELSE 0.05',
+      '                      END;',
+      '    END IF;',
+      '    FOR v_order_id IN (',
+      '          SELECT id',
+      '            FROM orders',
+      '           WHERE customer_id = p_customer_id',
+      '        ORDER BY id',
+      '    )',
+      '    LOOP',
+      '        UPDATE orders',
+      '           SET discount = v_discount',
+      '         WHERE id = v_order_id;',
+      '    END LOOP;',
+      '',
+      '    RETURN p_amount * (1 - v_discount);',
+      'END;',
+      '$$',
+      'LANGUAGE plpgsql;',
+      '',
+    ].join('\n'),
+  },
+  {
+    name: 'CREATE FUNCTION: linha em branco antes de SELECT/IF aninhado quando vêm logo após uma atribuição simples',
+    input: `create or replace function bump_score(p_id integer) returns numeric as $$
+declare
+v_score numeric;
+begin
+v_score := 10;
+select amount into v_score from scores where id = p_id;
+v_score := v_score + 1;
+if v_score > 100 then
+v_score := 100;
+end if;
+return v_score;
+end;
+$$ language plpgsql;`,
+    expected: [
+      'CREATE OR REPLACE FUNCTION bump_score (p_id integer)',
+      'RETURNS numeric',
+      'AS $$',
+      'DECLARE',
+      '    v_score numeric;',
+      'BEGIN',
+      '    v_score := 10;',
+      '',
+      '    SELECT amount INTO v_score',
+      '      FROM scores',
+      '     WHERE id = p_id;',
+      '',
+      '    v_score := v_score + 1;',
+      '',
+      '    IF v_score > 100',
+      '    THEN',
+      '        v_score := 100;',
+      '    END IF;',
+      '',
+      '    RETURN v_score;',
+      'END;',
+      '$$',
+      'LANGUAGE plpgsql;',
+      '',
+    ].join('\n'),
+  },
+  {
+    name: 'CREATE FUNCTION: ELSE órfão (IF engolido por comentário `--`) não fabrica END/END IF — cai no fallback de linha única',
+    input: `create or replace function broken_example(p_id integer) returns numeric as $$
+begin
+-- comment that swallows an if(p_id > 0) then v_x := 1;
+else
+v_x := 2;
+end if;
+return v_x;
+end;
+$$ language plpgsql;`,
+    expected: [
+      'create OR replace function broken_example(p_id integer) returns numeric as $$ begin -- comment that swallows an if(p_id > 0) then v_x := 1; ELSE v_x : = 2 ; END if ; return v_x ; END ; $$ language plpgsql',
+      '',
+    ].join('\n'),
+  },
 ];
 
 let failures = 0;

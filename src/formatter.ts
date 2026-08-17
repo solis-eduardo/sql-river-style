@@ -75,19 +75,40 @@ export function formatSql(source: string, options: FormatOptions = {}): string {
   }
 
   const statements = splitStatements(tokens);
-  const rendered = statements.map((stmt) => formatStatement(stmt, cfg)).filter((s) => s.trim().length > 0);
+  const rendered = statements.map((stmt) => formatStatement(stmt, cfg)).filter((s) => s.text.trim().length > 0);
 
   if (rendered.length === 0) {
     return '';
   }
   // Regra 9: sem `;` no final. Entre statements (arquivo com múltiplas
   // queries) o `;` é mantido, pois é necessário para a validade do SQL.
-  return rendered.join(';\n\n') + '\n';
+  // Exceção: CREATE FUNCTION/PROCEDURE/TYPE sempre mantêm o `;` final, mesmo
+  // sendo o último (ou único) statement do arquivo — ao contrário de um
+  // SELECT (comumente colado como fragmento em outro lugar), aqui o `;`
+  // fecha de fato o corpo entre `$tag$`/`LANGUAGE` ou a lista de campos.
+  const last = rendered[rendered.length - 1];
+  const trailingSemicolon = last.ownSemicolon ? ';' : '';
+  return rendered.map((r) => r.text).join(';\n\n') + trailingSemicolon + '\n';
 }
 
-function formatStatement(tokens: Token[], cfg: Cfg): string {
+interface StatementResult {
+  text: string;
+  /** true para CREATE FUNCTION/PROCEDURE/TYPE — mantêm `;` mesmo no fim do arquivo (ver regra 9 em `formatSql`). */
+  ownSemicolon: boolean;
+}
+
+function formatStatement(tokens: Token[], cfg: Cfg): StatementResult {
   if (tokens.length === 0) {
-    return '';
+    return { text: '', ownSemicolon: false };
+  }
+
+  const createFn = tryFormatCreateFunction(tokens, cfg);
+  if (createFn) {
+    return { text: trimBlankEdges(createFn).join('\n'), ownSemicolon: true };
+  }
+  const createType = tryFormatCreateType(tokens, cfg);
+  if (createType) {
+    return { text: trimBlankEdges(createType).join('\n'), ownSemicolon: true };
   }
 
   const FORMATTABLE = new Set(['SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE']);
@@ -97,17 +118,21 @@ function formatStatement(tokens: Token[], cfg: Cfg): string {
     // sessão...) ficam fora do escopo das regras de river style.
     // Maiusculiza palavras-chave e devolve em uma linha só, sem arriscar
     // reestruturar o que não é modelado por este formatter.
-    return renderTokensInline(tokens, cfg);
+    return { text: renderTokensInline(tokens, cfg), ownSemicolon: false };
   }
 
   const lines = formatQuery(tokens, 0, cfg);
+  return { text: trimBlankEdges(lines).join('\n'), ownSemicolon: false };
+}
+
+function trimBlankEdges(lines: string[]): string[] {
   while (lines.length > 0 && lines[0] === '') {
     lines.shift();
   }
   while (lines.length > 0 && lines[lines.length - 1] === '') {
     lines.pop();
   }
-  return lines.join('\n');
+  return lines;
 }
 
 function firstMeaningfulKeyword(tokens: Token[]): string | undefined {
@@ -123,8 +148,22 @@ function firstMeaningfulKeyword(tokens: Token[]): string | undefined {
 function splitStatements(tokens: Token[]): Token[][] {
   const statements: Token[][] = [];
   let depth = 0;
+  // Tag do dollar-quote aberto no momento (null fora de um corpo de
+  // função/procedure). Enquanto aberto, `;` não separa statement — um
+  // corpo de função tem um `;` por statement interno, e não são eles que
+  // devem virar limite de arquivo (ver README, "Definição de função").
+  let openTag: string | null = null;
   let current: Token[] = [];
   for (const t of tokens) {
+    if (t.type === 'dollarQuote') {
+      openTag = openTag === null ? t.text : openTag === t.text ? null : openTag;
+      current.push(t);
+      continue;
+    }
+    if (openTag !== null) {
+      current.push(t);
+      continue;
+    }
     if (t.text === '(') {
       depth++;
     } else if (t.text === ')') {
@@ -287,7 +326,7 @@ function computeWidth(blocks: ClauseLine[][], ops: string[], indent: number): nu
   for (const block of blocks) {
     for (const line of block) {
       max = Math.max(max, line.label.length);
-      if (line.label === 'SELECT') {
+      if (line.label === 'SELECT' || line.label === 'SELECT INTO') {
         hasSelect = true;
       }
     }
@@ -363,7 +402,17 @@ function findMarkers(tokens: Token[]): Marker[] {
       continue;
     }
     if (u === 'SELECT') {
-      markers.push(mk(i, i + 1, 'SELECT', 'SELECT'));
+      // `SELECT INTO var ...` (PL/pgSQL, só válido dentro de function/
+      // procedure) — "SELECT INTO" conta como um marcador só, do mesmo
+      // jeito que "INSERT INTO", empurrando FROM/WHERE mais pra direita.
+      // Só cobre essa ordem (INTO logo após SELECT); `SELECT col INTO var
+      // FROM` fica sem esse ajuste especial.
+      if (tokens[i + 1]?.upper === 'INTO') {
+        markers.push(mk(i, i + 2, 'SELECT', 'SELECT INTO'));
+        i++;
+      } else {
+        markers.push(mk(i, i + 1, 'SELECT', 'SELECT'));
+      }
       continue;
     }
     if (u === 'FROM') {
@@ -921,10 +970,13 @@ function computeUnaryFlags(tokens: Token[]): boolean[] {
 function needsNoSpaceBefore(curr: Token, prev: Token | undefined, prevIsUnary: boolean): boolean {
   return (
     curr.text === ')' ||
+    curr.text === ']' ||
     curr.text === ',' ||
     curr.text === '::' ||
+    curr.text === '[' ||
     (curr.text === '(' && prev?.type === 'ident') ||
     prev?.text === '(' ||
+    prev?.text === '[' ||
     prev?.text === '::' ||
     prevIsUnary
   );
@@ -1145,4 +1197,576 @@ function renderExpressionLines(tokens: Token[], baseColumn: number, cfg: Cfg): s
   }
 
   return caseLines;
+}
+
+// ---------------------------------------------------------------------------
+// CREATE FUNCTION / PROCEDURE — corpo em PL/pgSQL (dollar-quoted, ex.: $BODY$)
+// ---------------------------------------------------------------------------
+//
+// Não é um parser PL/pgSQL completo: cobre o subconjunto usado em queries de
+// relatório/funções de negócio comuns — DECLARE, BEGIN...END, IF/THEN/ELSE/
+// END IF, FOR var IN (query) LOOP...END LOOP, atribuição (:=), RETURN/RETURN
+// NEXT/RETURN QUERY, e o SQL comum (SELECT/INSERT/UPDATE/DELETE) embutido em
+// qualquer um desses — reaproveitando o mesmo `formatQuery` usado no resto do
+// arquivo. Construções não cobertas (EXCEPTION, WHILE, CURSOR, EXECUTE
+// dinâmico, ELSIF...) caem no fallback de linha única (renderTokensInline),
+// igual a qualquer DDL fora de escopo — nunca perdem conteúdo, só não ganham
+// reestruturação.
+
+/** `true` se `tokens[i]` é uma palavra que fecha o bloco atual (ELSE, ou
+ * qualquer `END`/`END IF`/`END LOOP`) — quem está formatando uma lista de
+ * statements pára aqui e devolve o cursor pra quem a chamou decidir o que
+ * fazer com o terminador. */
+function isBodyTerminator(tokens: Token[], i: number): boolean {
+  const u = tokens[i]?.upper;
+  return u === 'ELSE' || u === 'END';
+}
+
+/** Acha `keyword` na profundidade 0 de parênteses (e fora de um CASE...END
+ * aninhado) a partir de `start` — usado pra achar o THEN de um IF, o IN/LOOP
+ * de um FOR etc. */
+function findKeywordAtDepth0(tokens: Token[], start: number, keyword: string): number {
+  let depth = 0;
+  let caseDepth = 0;
+  for (let i = start; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.text === '(') {
+      depth++;
+      continue;
+    }
+    if (t.text === ')') {
+      depth--;
+      continue;
+    }
+    if (t.type === 'keyword' && t.upper === 'CASE') {
+      caseDepth++;
+      continue;
+    }
+    if (t.type === 'keyword' && t.upper === 'END' && caseDepth > 0) {
+      caseDepth--;
+      continue;
+    }
+    if (depth === 0 && caseDepth === 0 && t.upper === keyword) {
+      return i;
+    }
+  }
+  return tokens.length;
+}
+
+/** Acha o fim do statement atual: o `;` de profundidade 0 seguinte, ou o fim
+ * do array. Statements PL/pgSQL (atribuição, RETURN, DDL simples...) usam
+ * isso pra saber onde parar — diferente de blocos (IF/FOR/BEGIN), que têm
+ * suas próprias palavras de fechamento em vez de `;`. */
+function findStatementEnd(tokens: Token[], start: number): number {
+  let depth = 0;
+  for (let i = start; i < tokens.length; i++) {
+    if (tokens[i].text === '(') {
+      depth++;
+    } else if (tokens[i].text === ')') {
+      depth--;
+    } else if (tokens[i].text === ';' && depth === 0) {
+      return i;
+    }
+  }
+  return tokens.length;
+}
+
+interface BodyResult {
+  lines: string[];
+  next: number;
+}
+
+/** `query`: SELECT/WITH/INSERT/UPDATE/DELETE embutido (via `formatQuery`) —
+ * ganha uma linha em branco depois, e também antes se vier logo após uma
+ * atribuição/DDL simples (`other`). `return`: RETURN/RETURN NEXT/RETURN
+ * QUERY — ganha uma linha em branco antes. `block`: IF/FOR/BEGIN aninhado —
+ * mesma regra de "antes" que `query` quando vem logo após `other`. `other`:
+ * atribuição/DDL simples — sem espaçamento extra ao redor. */
+type BodyStmtKind = 'query' | 'return' | 'block' | 'other';
+
+interface OneStmtResult extends BodyResult {
+  kind: BodyStmtKind;
+}
+
+/** Formata uma sequência de statements PL/pgSQL a partir de `start`, parando
+ * ao encontrar um terminador de bloco (ELSE/END) que pertence a quem chamou.
+ * Devolve `null` se algum statement da lista não pôde ser formatado com
+ * segurança (ver `formatOneBodyStatement`) — propaga pra quem chamou em vez
+ * de tentar continuar com o que sobrou. */
+function formatStatementList(tokens: Token[], start: number, indent: number, cfg: Cfg): BodyResult | null {
+  const lines: string[] = [];
+  let cursor = start;
+  let prevKind: BodyStmtKind | null = null;
+  while (cursor < tokens.length && !isBodyTerminator(tokens, cursor)) {
+    const r = formatOneBodyStatement(tokens, cursor, indent, cfg);
+    if (r === null) {
+      return null;
+    }
+    if (r.next === cursor) {
+      // Salvaguarda: nunca deve acontecer, mas evita loop infinito se algum
+      // caso não cobrir consumir zero tokens.
+      break;
+    }
+    if (prevKind === 'query' || r.kind === 'return' || ((r.kind === 'query' || r.kind === 'block') && prevKind === 'other')) {
+      lines.push('');
+    }
+    lines.push(...r.lines);
+    cursor = r.next;
+    prevKind = r.kind;
+  }
+  return { lines, next: cursor };
+}
+
+/** Devolve `null` se um bloco filho (IF/FOR/BEGIN) não pôde ser formatado com
+ * segurança — ver os comentários em `formatBeginBlock`/`formatIfStatement`/
+ * `formatForStatement` sobre terminador inesperado. */
+function formatOneBodyStatement(tokens: Token[], start: number, indent: number, cfg: Cfg): OneStmtResult | null {
+  const pad = ' '.repeat(indent);
+  const lines: string[] = [];
+  let cursor = start;
+
+  // Dentro de um corpo PL/pgSQL, todo comentário fica em linha própria —
+  // não só os "standalone" (regra 8 do river style é para SQL de topo; uma
+  // fonte bagunçada pode ter um `--` colado ao token anterior sem `\n`
+  // antes, mas ele continua sendo o comentário do statement que vem a
+  // seguir, não parte do statement anterior).
+  while (tokens[cursor] && (tokens[cursor].type === 'comment' || tokens[cursor].type === 'blockComment')) {
+    lines.push(pad + tokens[cursor].text);
+    cursor++;
+  }
+  if (cursor >= tokens.length || isBodyTerminator(tokens, cursor)) {
+    return { lines, next: cursor, kind: 'other' };
+  }
+
+  const kw = tokens[cursor].upper;
+  if (kw === 'IF') {
+    const r = formatIfStatement(tokens, cursor, indent, cfg);
+    if (r === null) {
+      return null;
+    }
+    return { lines: [...lines, ...r.lines], next: r.next, kind: 'block' };
+  }
+  if (kw === 'FOR') {
+    const r = formatForStatement(tokens, cursor, indent, cfg);
+    if (r === null) {
+      return null;
+    }
+    return { lines: [...lines, ...r.lines], next: r.next, kind: 'block' };
+  }
+  if (kw === 'BEGIN') {
+    const r = formatBeginBlock(tokens, cursor, indent, cfg);
+    if (r === null) {
+      return null;
+    }
+    return { lines: [...lines, ...r.lines], next: r.next, kind: 'block' };
+  }
+  if (kw === 'RETURN') {
+    const r = formatReturnStatement(tokens, cursor, indent, cfg);
+    return { lines: [...lines, ...r.lines], next: r.next, kind: 'return' };
+  }
+
+  const end = findStatementEnd(tokens, cursor);
+  const stmtTokens = tokens.slice(cursor, end);
+  const stmtFirstKeyword = firstMeaningfulKeyword(stmtTokens);
+  const isQuery = !!stmtFirstKeyword && EMBEDDED_QUERY_KEYWORDS.has(stmtFirstKeyword);
+  lines.push(...renderSimpleBodyStatement(stmtTokens, indent, cfg));
+  const next = tokens[end]?.text === ';' ? end + 1 : end;
+  return { lines, next, kind: isQuery ? 'query' : 'other' };
+}
+
+const EMBEDDED_QUERY_KEYWORDS = new Set(['SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE']);
+
+/** Statement "folha" que não é IF/FOR/BEGIN/RETURN: atribuição
+ * (`var := expr;`), SQL comum (SELECT/INSERT/UPDATE/DELETE — reaproveita
+ * `formatQuery`, então CTEs/JOIN/subquery funcionam igual ao resto do
+ * arquivo) ou fallback genérico de DDL simples (TRUNCATE, DROP TABLE,
+ * CREATE INDEX, CREATE TEMP TABLE ... AS (subquery)...). */
+function renderSimpleBodyStatement(stmtTokens: Token[], indent: number, cfg: Cfg): string[] {
+  const pad = ' '.repeat(indent);
+
+  if (stmtTokens[0]?.type === 'ident' && stmtTokens[1]?.text === ':' && stmtTokens[2]?.text === '=') {
+    const name = stmtTokens[0].text;
+    const exprTokens = stmtTokens.slice(3);
+    const prefix = `${pad}${name} := `;
+    const lines = renderExpressionLines(exprTokens, prefix.length, cfg);
+    lines[0] = prefix + lines[0];
+    lines[lines.length - 1] += ';';
+    return lines;
+  }
+
+  const firstKeyword = firstMeaningfulKeyword(stmtTokens);
+  if (firstKeyword && EMBEDDED_QUERY_KEYWORDS.has(firstKeyword)) {
+    const lines = formatQuery(stmtTokens, indent, cfg);
+    lines[lines.length - 1] += ';';
+    return lines;
+  }
+
+  // DDL simples com uma subquery entre parênteses embutida (ex.: CREATE TEMP
+  // TABLE x AS (SELECT ...)) — formata a subquery recursivamente, igual a
+  // uma derived table em FROM/JOIN; o resto (fora dos parênteses) é inline.
+  for (let i = 0; i < stmtTokens.length; i++) {
+    if (stmtTokens[i].text !== '(') {
+      continue;
+    }
+    let p = i + 1;
+    while (stmtTokens[p] && (stmtTokens[p].type === 'comment' || stmtTokens[p].type === 'blockComment')) {
+      p++;
+    }
+    const innerKw = stmtTokens[p]?.upper;
+    if (innerKw !== 'SELECT' && innerKw !== 'WITH') {
+      continue;
+    }
+    const closeIdx = matchParen(stmtTokens, i) - 1;
+    const before = renderTokensInline(stmtTokens.slice(0, i), cfg);
+    const inner = stmtTokens.slice(i + 1, closeIdx);
+    const after = stmtTokens.slice(closeIdx + 1);
+    const lines = [`${pad}${before} (`, ...formatQuery(inner, indent + cfg.indentSize, cfg), `${pad})${after.length ? ' ' + renderTokensInline(after, cfg) : ''};`];
+    return lines;
+  }
+
+  return [`${pad}${renderTokensInline(stmtTokens, cfg)};`];
+}
+
+function formatReturnStatement(tokens: Token[], start: number, indent: number, cfg: Cfg): BodyResult {
+  const pad = ' '.repeat(indent);
+  let cursor = start + 1;
+  let prefix = 'RETURN';
+  if (tokens[cursor]?.upper === 'NEXT') {
+    prefix = 'RETURN NEXT';
+    cursor++;
+  } else if (tokens[cursor]?.upper === 'QUERY') {
+    prefix = 'RETURN QUERY';
+    cursor++;
+  }
+
+  const end = findStatementEnd(tokens, cursor);
+  const exprTokens = tokens.slice(cursor, end);
+  const lines: string[] = [];
+  if (exprTokens.length === 0) {
+    lines.push(`${pad}${prefix};`);
+  } else {
+    const fullPrefix = `${pad}${prefix} `;
+    const exprLines = renderExpressionLines(exprTokens, fullPrefix.length, cfg);
+    exprLines[0] = fullPrefix + exprLines[0];
+    exprLines[exprLines.length - 1] += ';';
+    lines.push(...exprLines);
+  }
+  const next = tokens[end]?.text === ';' ? end + 1 : end;
+  return { lines, next };
+}
+
+/** `IF` cuja condição é uma subquery entre parênteses (`IF (SELECT ...)`)
+ * formata recursivamente como uma derived table; senão, uma expressão comum
+ * — preserva parênteses explícitos do fonte no estilo `( expr )` do `ON`,
+ * mas não inventa parênteses que não estavam lá. */
+function renderIfCondition(tokens: Token[], indent: number, cfg: Cfg): string[] {
+  const pad = ' '.repeat(indent);
+  if (tokens[0]?.text === '(' && matchParen(tokens, 0) === tokens.length) {
+    const inner = tokens.slice(1, tokens.length - 1);
+    let p = 0;
+    while (inner[p] && (inner[p].type === 'comment' || inner[p].type === 'blockComment')) {
+      p++;
+    }
+    const kw = inner[p]?.upper;
+    if (kw === 'SELECT' || kw === 'WITH') {
+      const innerLines = formatQuery(inner, indent + cfg.indentSize, cfg);
+      return [`${pad}IF (`, ...innerLines, `${pad})`];
+    }
+    return [`${pad}IF ( ${renderTokensInline(inner, cfg)} )`];
+  }
+  return [`${pad}IF ${renderTokensInline(tokens, cfg)}`];
+}
+
+function formatIfStatement(tokens: Token[], start: number, indent: number, cfg: Cfg): BodyResult | null {
+  const pad = ' '.repeat(indent);
+  let cursor = start + 1;
+  const thenIdx = findKeywordAtDepth0(tokens, cursor, 'THEN');
+  const condTokens = tokens.slice(cursor, thenIdx);
+
+  const lines: string[] = [...renderIfCondition(condTokens, indent, cfg), `${pad}THEN`];
+  cursor = thenIdx + 1;
+
+  const thenBody = formatStatementList(tokens, cursor, indent + cfg.indentSize, cfg);
+  if (thenBody === null) {
+    return null;
+  }
+  lines.push(...thenBody.lines);
+  cursor = thenBody.next;
+
+  if (tokens[cursor]?.upper === 'ELSE') {
+    lines.push(`${pad}ELSE`);
+    cursor++;
+    const elseBody = formatStatementList(tokens, cursor, indent + cfg.indentSize, cfg);
+    if (elseBody === null) {
+      return null;
+    }
+    lines.push(...elseBody.lines);
+    cursor = elseBody.next;
+  }
+
+  if (tokens[cursor]?.upper !== 'END') {
+    // Terminador inesperado — provavelmente um ELSE órfão ou EOF por causa de
+    // uma construção não coberta (ou fonte malformada, ex.: comentário `--`
+    // que engoliu um IF/THEN inteiro na mesma linha física). Não inventa um
+    // `END IF;` que não está no token stream: desiste de estruturar este IF
+    // (e, em cascata, o corpo inteiro da função) — quem chamou cai no
+    // fallback de linha única em vez de arriscar reescrever o significado.
+    return null;
+  }
+  lines.push(`${pad}END IF;`);
+  cursor += tokens[cursor + 1]?.upper === 'IF' ? 2 : 1;
+  if (tokens[cursor]?.text === ';') {
+    cursor++;
+  }
+  return { lines, next: cursor };
+}
+
+function formatBeginBlock(tokens: Token[], start: number, indent: number, cfg: Cfg): BodyResult | null {
+  const pad = ' '.repeat(indent);
+  const lines = [`${pad}BEGIN`];
+  const body = formatStatementList(tokens, start + 1, indent + cfg.indentSize, cfg);
+  if (body === null) {
+    return null;
+  }
+  lines.push(...body.lines);
+  let cursor = body.next;
+  if (tokens[cursor]?.upper !== 'END') {
+    // Idem formatIfStatement: terminador inesperado (ex.: ELSE órfão) — não
+    // fabrica `END;`. Desiste e deixa o chamador cair no fallback seguro.
+    return null;
+  }
+  lines.push(`${pad}END;`);
+  cursor++; // token END
+  if (tokens[cursor]?.text === ';') {
+    cursor++;
+  }
+  return { lines, next: cursor };
+}
+
+/** `FOR var IN (query) LOOP ... END LOOP` — a lista após IN reaproveita
+ * `formatQuery` igual a uma derived table de FROM/JOIN (mesma convenção:
+ * parêntese colado no `(`, corpo indentado `indentSize` a mais). A forma sem
+ * parênteses (`FOR var IN expressão LOOP`, ex. range `1..10`) cai numa linha
+ * só — rara nas queries de relatório cobertas por este formatter. */
+function formatForStatement(tokens: Token[], start: number, indent: number, cfg: Cfg): BodyResult | null {
+  const pad = ' '.repeat(indent);
+  let cursor = start + 1;
+  const inIdx = findKeywordAtDepth0(tokens, cursor, 'IN');
+  const varText = renderTokensInline(tokens.slice(cursor, inIdx), cfg);
+  cursor = inIdx + 1;
+
+  const lines: string[] = [];
+  if (tokens[cursor]?.text === '(') {
+    const closeIdx = matchParen(tokens, cursor) - 1;
+    const inner = tokens.slice(cursor + 1, closeIdx);
+    lines.push(`${pad}FOR ${varText} IN (`);
+    lines.push(...formatQuery(inner, indent + cfg.indentSize, cfg));
+    lines.push(`${pad})`);
+    cursor = closeIdx + 1;
+  } else {
+    const loopIdx = findKeywordAtDepth0(tokens, cursor, 'LOOP');
+    lines.push(`${pad}FOR ${varText} IN ${renderTokensInline(tokens.slice(cursor, loopIdx), cfg)}`);
+    cursor = loopIdx;
+  }
+
+  if (tokens[cursor]?.upper === 'LOOP') {
+    cursor++;
+  }
+  lines.push(`${pad}LOOP`);
+
+  const body = formatStatementList(tokens, cursor, indent + cfg.indentSize, cfg);
+  if (body === null) {
+    return null;
+  }
+  lines.push(...body.lines);
+  cursor = body.next;
+
+  if (tokens[cursor]?.upper !== 'END') {
+    // Idem formatIfStatement/formatBeginBlock — não fabrica `END LOOP;`.
+    return null;
+  }
+  lines.push(`${pad}END LOOP;`);
+  cursor += tokens[cursor + 1]?.upper === 'LOOP' ? 2 : 1;
+  if (tokens[cursor]?.text === ';') {
+    cursor++;
+  }
+  return { lines, next: cursor };
+}
+
+/** Seção `DECLARE`: cada declaração (`nome TIPO [DEFAULT expr];`) numa
+ * linha, indentada `indentSize` a mais que `DECLARE`; comentários standalone
+ * ficam na indentação das declarações, não na coluna 1 (regra 8 do river
+ * style é só pra SQL de topo — aqui dentro acompanha o bloco). */
+function formatDeclareSection(tokens: Token[], start: number, indent: number, cfg: Cfg): BodyResult {
+  const pad = ' '.repeat(indent);
+  const declIndent = indent + cfg.indentSize;
+  const declPad = ' '.repeat(declIndent);
+  const lines = [`${pad}DECLARE`];
+  let cursor = start + 1;
+
+  while (cursor < tokens.length && tokens[cursor].upper !== 'BEGIN') {
+    while (tokens[cursor] && (tokens[cursor].type === 'comment' || tokens[cursor].type === 'blockComment')) {
+      lines.push(declPad + tokens[cursor].text);
+      cursor++;
+    }
+    if (cursor >= tokens.length || tokens[cursor].upper === 'BEGIN') {
+      break;
+    }
+    const end = findStatementEnd(tokens, cursor);
+    const declTokens = tokens.slice(cursor, end);
+    lines.push(`${declPad}${renderTokensInline(declTokens, cfg)};`);
+    cursor = tokens[end]?.text === ';' ? end + 1 : end;
+  }
+  return { lines, next: cursor };
+}
+
+/** Corpo entre os delimitadores de dollar-quoting (`$BODY$ ... $BODY$`):
+ * comentário de cabeçalho opcional, `DECLARE` opcional, `BEGIN...END`. Devolve
+ * `null` se o `BEGIN...END` não pôde ser formatado com segurança (ver
+ * `formatBeginBlock`) — `tryFormatCreateFunction` cai no fallback de linha
+ * única pra função inteira nesse caso, em vez de arriscar inventar texto. */
+function formatPlpgsqlBody(tokens: Token[], indent: number, cfg: Cfg): string[] | null {
+  const pad = ' '.repeat(indent);
+  const lines: string[] = [];
+  let cursor = 0;
+
+  while (tokens[cursor] && (tokens[cursor].type === 'comment' || tokens[cursor].type === 'blockComment')) {
+    lines.push(pad + tokens[cursor].text);
+    cursor++;
+  }
+
+  if (tokens[cursor]?.upper === 'DECLARE') {
+    const decl = formatDeclareSection(tokens, cursor, indent, cfg);
+    lines.push(...decl.lines);
+    cursor = decl.next;
+  }
+
+  if (tokens[cursor]?.upper === 'BEGIN') {
+    const begin = formatBeginBlock(tokens, cursor, indent, cfg);
+    if (begin === null) {
+      return null;
+    }
+    lines.push(...begin.lines);
+    cursor = begin.next;
+  }
+
+  if (cursor < tokens.length) {
+    // Sobra inesperada (construção não coberta) — preserva em vez de
+    // descartar, sem tentar reformatar.
+    lines.push(`${pad}${renderTokensInline(tokens.slice(cursor), cfg)}`);
+  }
+
+  return lines;
+}
+
+/** `CREATE [OR REPLACE] FUNCTION|PROCEDURE nome (params) RETURNS tipo AS
+ * $tag$ ... $tag$ LANGUAGE lang` — cabeçalho numa linha por cláusula, corpo
+ * via `formatPlpgsqlBody`. Devolve `null` se `tokens` não é esse tipo de
+ * statement (deixa o chamador cair no fallback de sempre). */
+function tryFormatCreateFunction(tokens: Token[], cfg: Cfg): string[] | null {
+  let cursor = 0;
+  while (tokens[cursor] && (tokens[cursor].type === 'comment' || tokens[cursor].type === 'blockComment')) {
+    cursor++;
+  }
+  if (tokens[cursor]?.upper !== 'CREATE') {
+    return null;
+  }
+  let header = 'CREATE';
+  cursor++;
+  if (tokens[cursor]?.upper === 'OR' && tokens[cursor + 1]?.upper === 'REPLACE') {
+    header += ' OR REPLACE';
+    cursor += 2;
+  }
+  const kind = tokens[cursor]?.upper;
+  if (kind !== 'FUNCTION' && kind !== 'PROCEDURE') {
+    return null;
+  }
+  header += ` ${kind}`;
+  cursor++;
+
+  const nameTok = tokens[cursor++];
+  if (!nameTok || tokens[cursor]?.text !== '(') {
+    return null;
+  }
+  const paramsClose = matchParen(tokens, cursor) - 1;
+  const paramsInline = renderTokensInline(tokens.slice(cursor, paramsClose + 1), cfg);
+  cursor = paramsClose + 1;
+
+  const lines = [`${header} ${nameTok.text} ${paramsInline}`];
+
+  if (tokens[cursor]?.upper === 'RETURNS') {
+    cursor++;
+    const asIdx = findKeywordAtDepth0(tokens, cursor, 'AS');
+    lines.push(`RETURNS ${renderTokensInline(tokens.slice(cursor, asIdx), cfg)}`);
+    cursor = asIdx;
+  }
+  if (tokens[cursor]?.upper !== 'AS' || tokens[cursor + 1]?.type !== 'dollarQuote') {
+    // Cabeçalho reconhecido, mas sem corpo dollar-quoted (assinatura só,
+    // função em SQL puro sem AS $$...$$, etc.) — fora do subconjunto
+    // coberto; deixa o fallback de linha única cuidar do statement inteiro.
+    return null;
+  }
+  cursor++;
+  const tag = tokens[cursor].text;
+  cursor++;
+  lines.push(`AS ${tag}`);
+
+  let bodyEnd = cursor;
+  while (bodyEnd < tokens.length && !(tokens[bodyEnd].type === 'dollarQuote' && tokens[bodyEnd].text === tag)) {
+    bodyEnd++;
+  }
+  const bodyTokens = tokens.slice(cursor, bodyEnd);
+  const bodyLines = formatPlpgsqlBody(bodyTokens, 0, cfg);
+  if (bodyLines === null) {
+    // Corpo tem construção não coberta / terminador inesperado — desiste de
+    // estruturar a função inteira em vez de arriscar inventar texto; o
+    // chamador (formatStatement) cai no fallback de linha única.
+    return null;
+  }
+  lines.push(...bodyLines);
+  cursor = bodyEnd + 1; // pula o dollarQuote de fechamento
+  lines.push(tag);
+
+  if (tokens[cursor]?.upper === 'LANGUAGE') {
+    cursor++;
+    const langTokens: Token[] = [];
+    while (tokens[cursor] && tokens[cursor].text !== ';') {
+      langTokens.push(tokens[cursor]);
+      cursor++;
+    }
+    lines.push(`LANGUAGE ${renderTokensInline(langTokens, cfg)}`);
+  }
+
+  return lines;
+}
+
+/** `CREATE TYPE nome AS (campo tipo, campo tipo, ...)` — um campo por linha,
+ * indentado; tipo de cada campo não é maiusculizado (não é keyword nem cast,
+ * é só um identificador — preserva o que veio no fonte). */
+function tryFormatCreateType(tokens: Token[], cfg: Cfg): string[] | null {
+  let cursor = 0;
+  while (tokens[cursor] && (tokens[cursor].type === 'comment' || tokens[cursor].type === 'blockComment')) {
+    cursor++;
+  }
+  if (tokens[cursor]?.upper !== 'CREATE' || tokens[cursor + 1]?.upper !== 'TYPE') {
+    return null;
+  }
+  const nameTok = tokens[cursor + 2];
+  if (!nameTok || tokens[cursor + 3]?.upper !== 'AS' || tokens[cursor + 4]?.text !== '(') {
+    return null;
+  }
+  const openIdx = cursor + 4;
+  const closeIdx = matchParen(tokens, openIdx) - 1;
+  if (closeIdx !== tokens.length - 1) {
+    return null;
+  }
+
+  const fields = splitTopLevelCommas(tokens.slice(openIdx + 1, closeIdx));
+  const lines = [`CREATE TYPE ${nameTok.text} AS (`];
+  fields.forEach((field, idx) => {
+    const suffix = idx < fields.length - 1 ? ',' : '';
+    lines.push(`${' '.repeat(cfg.indentSize)}${renderTokensInline(field, cfg)}${suffix}`);
+  });
+  lines.push(')');
+  return lines;
 }

@@ -156,6 +156,51 @@ INSERT INTO ecm_conteudo (nome, categoria_id)
   RETURNING id
 ```
 
+Function/procedure definitions (`CREATE [OR REPLACE] FUNCTION`/
+`PROCEDURE` with a dollar-quoted body, `AS $$ ... $$`/`AS $tag$ ...
+$tag$`) get their own layout: header clauses one per line, `DECLARE`/
+`BEGIN`/`END` blocks, `IF`/`THEN`/`ELSE`/`END IF`, `FOR var IN (query)
+LOOP`/`END LOOP`, assignment (`:=`), and `RETURN`/`RETURN NEXT`/
+`RETURN QUERY` — any `SELECT`/`INSERT`/`UPDATE`/`DELETE` embedded in
+the body goes through the same river-style formatting as everything
+else. A blank line separates a multi-line embedded query from what
+follows it, precedes `RETURN`, and also precedes an embedded query or
+a nested `IF`/`FOR`/`BEGIN` block when it comes right after a plain
+assignment/DDL statement — consecutive plain statements otherwise stay
+tight, with no blank lines between them:
+
+```sql
+CREATE OR REPLACE FUNCTION calculate_discount (p_customer_id integer, p_amount numeric)
+RETURNS numeric
+AS $$
+DECLARE
+    v_tier text;
+    v_discount numeric;
+BEGIN
+    SELECT tier INTO v_tier
+      FROM customers
+     WHERE id = p_customer_id;
+
+    IF ( v_tier = 'gold' )
+    THEN
+        v_discount := 0.20;
+    ELSE
+        v_discount := 0.05;
+    END IF;
+
+    RETURN p_amount * (1 - v_discount);
+END;
+$$
+LANGUAGE plpgsql;
+```
+
+Not covered: `EXCEPTION` blocks, `WHILE`/`CURSOR`, dynamic `EXECUTE`,
+`ELSIF`, and `FOR` over a bare range/expression (`FOR i IN 1..10
+LOOP`) — these fall back to the generic DDL rendering (keywords
+uppercased, no restructuring), same as anything else out of scope. See
+"Scope and known limitations" below for the `--` comment caveat, which
+matters more here than anywhere else in the formatter.
+
 ## Usage
 
 - **Format document**: `Shift+Alt+F` (VS Code's default formatter
@@ -179,15 +224,31 @@ INSERT INTO ecm_conteudo (nome, categoria_id)
   `RETURNING`. Other statements (DDL, `MERGE`, session commands...) are
   out of scope: they only get their keywords uppercased, without river
   restructuring.
-- **Function/procedure definitions are not supported at all** —
-  `CREATE FUNCTION`/`CREATE PROCEDURE` bodies wrapped in dollar-quoting
-  (`AS $$ ... $$`, `AS $tag$ ... $tag$`) aren't recognized by the
-  tokenizer, which doesn't know `$$` as a string delimiter. Instead of
-  degrading gracefully like other DDL, this actively mangles the
-  output — the `$$` gets split into stray tokens, whitespace inside the
-  body collapses, and the file's trailing `;` may be stripped even
-  though it's semantically required there. Don't run this formatter on
-  files containing function/procedure definitions for now.
+- `CREATE FUNCTION`/`PROCEDURE` bodies (see the example above) cover the
+  common case but aren't a full PL/pgSQL parser: `EXCEPTION` blocks,
+  `WHILE`, `CURSOR`, dynamic `EXECUTE`, `ELSIF`, and `FOR` over a bare
+  range instead of a query aren't modeled — they render as a single
+  inline line via the generic DDL fallback (keywords uppercased,
+  without restructuring), same as any other out-of-scope statement.
+  `SELECT INTO var` only gets the combined `SELECT INTO` marker
+  treatment when `INTO` immediately follows `SELECT`; the `SELECT col
+  INTO var` word order is treated as a plain `SELECT` instead.
+- **A `--` comment always swallows the rest of its physical source
+  line** — including any real code crammed onto the same line. That's
+  normal SQL comment syntax, not a formatter bug: if a raw file has
+  `-- note SELECT 1;` all on one line, "un-swallowing" the `SELECT 1;`
+  would mean changing what the file *means* (turning text that looks
+  commented-out into live code again), not just reformatting it — this
+  formatter never does that. The result is the whole thing rendering
+  as one (long) comment line, unchanged. This bites hardest inside
+  `CREATE FUNCTION` bodies exported from tools that collapse
+  whitespace, since procedural code tends to have many short
+  comment-adjacent statements — check files like that by eye before
+  trusting the output wholesale. If swallowing an `IF`/`THEN` this way
+  leaves a dangling `ELSE`/`END` the formatter can't match up, it never
+  guesses: the whole function/procedure falls back to the generic
+  single-line rendering instead of fabricating a closing keyword that
+  isn't in the source.
 - `INSERT ... ON CONFLICT` isn't specifically modeled — `ON CONFLICT
   (...) DO NOTHING` stays concatenated at the end of the `VALUES` line;
   in `ON CONFLICT (...) DO UPDATE SET ...` the `SET` gets its own line
@@ -417,6 +478,56 @@ INSERT INTO ecm_conteudo (nome, categoria_id)
   RETURNING id
 ```
 
+Definição de função/procedure (`CREATE [OR REPLACE] FUNCTION`/
+`PROCEDURE` com corpo em dollar-quoting, `AS $$ ... $$`/`AS $tag$ ...
+$tag$`) ganha layout próprio: cláusulas do cabeçalho uma por linha,
+blocos `DECLARE`/`BEGIN`/`END`, `IF`/`THEN`/`ELSE`/`END IF`, `FOR var
+IN (query) LOOP`/`END LOOP`, atribuição (`:=`) e `RETURN`/`RETURN
+NEXT`/`RETURN QUERY` — qualquer `SELECT`/`INSERT`/`UPDATE`/`DELETE`
+embutido no corpo passa pela mesma formatação river do resto. Uma
+linha em branco separa uma query embutida de múltiplas linhas do que
+vem depois dela, antecede o `RETURN`, e também antecede uma query
+embutida ou um bloco `IF`/`FOR`/`BEGIN` aninhado quando vêm logo após
+uma atribuição/DDL simples — statements simples consecutivos, por
+outro lado, ficam colados, sem linha em branco entre eles:
+
+```sql
+CREATE OR REPLACE FUNCTION calculate_discount (p_customer_id integer, p_amount numeric)
+RETURNS numeric
+AS $$
+DECLARE
+    v_tier text;
+    v_discount numeric;
+BEGIN
+    SELECT tier INTO v_tier
+      FROM customers
+     WHERE id = p_customer_id;
+
+    IF ( v_tier = 'gold' )
+    THEN
+        v_discount := 0.20;
+    ELSE
+        v_discount := 0.05;
+    END IF;
+
+    RETURN p_amount * (1 - v_discount);
+END;
+$$
+LANGUAGE plpgsql;
+```
+
+Fora de escopo: blocos `EXCEPTION`, `WHILE`/`CURSOR`, `EXECUTE`
+dinâmico, `ELSIF`, e `FOR` sobre um range/expressão solta (`FOR i IN
+1..10 LOOP`) — esses caem no fallback genérico de DDL (palavras-chave
+maiúsculas, sem reestruturação), igual a qualquer outra coisa fora de
+escopo. Veja "Escopo e limitações conhecidas" logo abaixo pra
+ressalva sobre comentário `--`, que pesa mais aqui do que em qualquer
+outro lugar do formatter. Se um comentário engolir um `IF`/`THEN`
+desse jeito e sobrar um `ELSE`/`END` órfão que o formatter não
+consegue casar, ele nunca chuta: a função/procedure inteira cai no
+fallback de linha única em vez de inventar uma palavra-chave de
+fechamento que não está no fonte.
+
 ### Uso
 
 - **Formatar documento**: `Shift+Alt+F` (formatador padrão do VS Code
@@ -441,15 +552,29 @@ INSERT INTO ecm_conteudo (nome, categoria_id)
   `RETURNING`. Outros statements (DDL, `MERGE`, comandos de sessão...)
   ficam fora do escopo: só têm as palavras-chave maiusculizadas, sem
   reestruturação em river style.
-- **Definição de função/procedure não é suportada de jeito nenhum** —
-  corpos de `CREATE FUNCTION`/`CREATE PROCEDURE` entre dollar-quoting
-  (`AS $$ ... $$`, `AS $tag$ ... $tag$`) não são reconhecidos pelo
-  tokenizer, que não sabe que `$$` é um delimitador de string. Em vez
-  de degradar bem como o resto do DDL, isso bagunça a saída de verdade —
-  o `$$` é quebrado em tokens soltos, espaços dentro do corpo colapsam,
-  e o `;` final do arquivo pode ser removido mesmo sendo
-  semanticamente obrigatório ali. Por enquanto, não rode o formatter em
-  arquivos com definição de função/procedure.
+- Corpos de `CREATE FUNCTION`/`PROCEDURE` (veja o exemplo acima) cobrem
+  o caso comum, mas não são um parser completo de PL/pgSQL: blocos
+  `EXCEPTION`, `WHILE`, `CURSOR`, `EXECUTE` dinâmico, `ELSIF`, e `FOR`
+  sobre um range solto em vez de uma query não são modelados —
+  renderizam como uma única linha inline via o fallback genérico de DDL
+  (palavras-chave maiusculizadas, sem reestruturação), igual a qualquer
+  outro statement fora de escopo. `SELECT INTO var` só ganha o
+  tratamento de marcador combinado `SELECT INTO` quando `INTO` vem logo
+  depois de `SELECT`; a ordem `SELECT col INTO var` é tratada como um
+  `SELECT` comum.
+- **Um comentário `--` sempre engole o resto da linha física de
+  origem** — inclusive código de verdade colado na mesma linha. Isso é
+  sintaxe normal de comentário SQL, não um bug do formatter: se um
+  arquivo bruto tem `-- nota SELECT 1;` tudo numa linha só,
+  "desengolir" o `SELECT 1;` significaria mudar o que o arquivo
+  *significa* (transformar texto que parece comentado em código vivo de
+  novo), não só reformatar — este formatter nunca faz isso. O
+  resultado é o trecho inteiro virando uma linha de comentário (longa),
+  sem alteração. Isso pesa mais dentro de corpos de `CREATE FUNCTION`
+  exportados por ferramentas que colapsam espaços em branco, já que
+  código procedural tende a ter muitos statements colados a
+  comentários — confira arquivos assim manualmente antes de confiar na
+  saída de olhos fechados.
 - `INSERT ... ON CONFLICT` não é modelado especificamente — `ON CONFLICT
   (...) DO NOTHING` fica concatenado no fim da linha de `VALUES`; em
   `ON CONFLICT (...) DO UPDATE SET ...` o `SET` ganha sua própria linha

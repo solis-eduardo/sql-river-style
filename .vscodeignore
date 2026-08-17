@@ -1,5 +1,6 @@
 .vscode/**
 .claude/**
+.github/**
 .gitignore
 src/**
 test/**
@@ -10,3 +11,6 @@ node_modules/**
 package-lock.json
 **/*.map
 .eslintrc*
+sqls/**
+sqls.zip
+*.vsix
