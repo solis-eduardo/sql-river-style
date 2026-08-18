@@ -3,6 +3,28 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.2] - 2026-08-18
+
+### Changed
+
+- Internal architecture refactor — no formatting output change (all 56
+  `examples/` golden files stayed byte-identical before/after):
+  - The ~12 independent hand-rolled paren/CASE-depth token scans spread
+    across `formatter.ts` (`matchParen`, `findMarkers`,
+    `findKeywordAtDepth0`, `splitTopLevelAndOr`, ...) were unified
+    behind a shared `DepthCursor` in a new `src/token-scan.ts`.
+  - The PL/pgSQL `IF`/`FOR`/`LOOP`/`BEGIN`/`CREATE FUNCTION` machinery
+    moved out of `formatter.ts` into its own `src/plpgsql.ts`, exporting
+    `formatStatementList` as a real, directly-testable entry point
+    instead of only being reachable through a full dollar-quoted
+    function body.
+  - `tokenizer.ts`'s keyword-vs-identifier classification
+    (`RESERVED_KEYWORDS`/`NON_RESERVED_DDL_KEYWORDS`) is now one named
+    `isProtectedFromCaseFold` function instead of an inline expression.
+  - Adds 54 new unit tests (`test/token-scan.ts`, `test/plpgsql.ts`,
+    `test/tokenizer.ts`) exercising cases that were previously only
+    reachable by accident through a full SQL example.
+
 ## [1.2.1] - 2026-08-18
 
 ### Fixed

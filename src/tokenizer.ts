@@ -104,6 +104,31 @@ const NON_RESERVED_DDL_KEYWORDS = new Set([
   'TABLESPACE', 'CASCADE', 'RESTRICT', 'TRUNCATE', 'RENAME',
 ]);
 
+/**
+ * true quando `upper` (já em maiúsculas) é uma palavra que este formatter
+ * nunca trata como identificador de dado comum quando aparece SEM aspas no
+ * fonte — usado só pelo ramo sem aspas de `normalizeIdentSegment` pra
+ * decidir se pode dobrar pra minúsculo. Junta os dois motivos possíveis:
+ * `RESERVED_KEYWORDS` (reservada de verdade — nem poderia ser identificador
+ * sem aspas pro Postgres) e `NON_RESERVED_DDL_KEYWORDS` (tecnicamente
+ * poderia, mas na prática só aparece como comando de DDL fora de escopo).
+ *
+ * NÃO usar em `quoteIdentIfNeeded` nem no ramo COM aspas de
+ * `normalizeIdentSegment`: nos dois casos já se sabe, sem ambiguidade, que
+ * a palavra está numa posição de identificador de verdade (um alias
+ * explícito, ou aspas que o autor do SQL já colocou) — diferente do ramo
+ * sem aspas, onde um `DROP` solto no meio do token stream tanto pode ser
+ * comando de DDL quanto nome de coluna sem aspas, e não dá pra saber qual
+ * sem parsear o statement inteiro (fora do escopo deste formatter — ver
+ * `NON_RESERVED_DDL_KEYWORDS`). Nesses outros dois casos misturar as duas
+ * listas quotaria/preservaria aspas à toa: Postgres aceita `drop`/`alter`/
+ * ... sem aspas como identificador comum — não são reservadas de verdade,
+ * só não são o que este formatter espera ver soltas no meio do stream.
+ */
+export function isProtectedFromCaseFold(upper: string): boolean {
+  return RESERVED_KEYWORDS.has(upper) || NON_RESERVED_DDL_KEYWORDS.has(upper);
+}
+
 /** Um identificador entre aspas só precisa delas se tiver maiúscula, espaço, acento ou outro caractere fora de `[a-z0-9_]`, ou se colidir com uma palavra reservada do Postgres. */
 const SAFE_TO_UNQUOTE = /^[a-z_][a-z0-9_]*$/;
 
@@ -115,6 +140,10 @@ const SAFE_TO_UNQUOTE = /^[a-z_][a-z0-9_]*$/;
  * formatter pra alias que chegam como string literal (`AS 'Foo'`, convenção
  * do SQL Server) e precisam virar identificador de verdade. */
 export function quoteIdentIfNeeded(name: string): string {
+  // Só `RESERVED_KEYWORDS` — `name` já é sabidamente um identificador (um
+  // alias explícito), não um token ambíguo solto no meio do stream, então
+  // `NON_RESERVED_DDL_KEYWORDS` não se aplica aqui (ver
+  // `isProtectedFromCaseFold`).
   return SAFE_TO_UNQUOTE.test(name) && !RESERVED_KEYWORDS.has(name.toUpperCase()) ? name : `"${name.replace(/"/g, '""')}"`;
 }
 
@@ -138,9 +167,11 @@ export function quoteIdentIfNeeded(name: string): string {
  * (minúsculo/dígito/`_`, sem colidir com reservada). */
 function normalizeIdentSegment(segment: string): string {
   if (segment[0] !== '"') {
-    const upper = segment.toUpperCase();
-    return RESERVED_KEYWORDS.has(upper) || NON_RESERVED_DDL_KEYWORDS.has(upper) ? segment : segment.toLowerCase();
+    return isProtectedFromCaseFold(segment.toUpperCase()) ? segment : segment.toLowerCase();
   }
+  // Só `RESERVED_KEYWORDS` — `inner` veio de um segmento que JÁ tinha aspas
+  // no fonte, então não é o token ambíguo que `isProtectedFromCaseFold`
+  // existe pra proteger (ver seu comentário).
   const inner = segment.slice(1, -1).replace(/""/g, '"');
   return SAFE_TO_UNQUOTE.test(inner) && !RESERVED_KEYWORDS.has(inner.toUpperCase()) ? inner : segment;
 }
