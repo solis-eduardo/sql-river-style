@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.1] - 2026-08-18
+
+### Fixed
+
+- The 1.2.0 fix for "reserved word outside `KEYWORD_SET` folded to
+  lowercase by mistake" only exempted PostgreSQL's *reserved* keywords
+  (`RESERVED_KEYWORDS`, e.g. `CREATE`/`TABLE`) — `DROP`, `ALTER`,
+  `INDEX` and other *non-reserved* DDL keywords, explicitly named as
+  examples in that same fix, were still being folded (`DROP TABLE Foo`
+  →`drop TABLE foo`). A separate `NON_RESERVED_DDL_KEYWORDS` set
+  (curated to unambiguous DDL verbs/objects, not the full non-reserved
+  category — most of which double as plausible column names) now covers
+  this half of the vocabulary too.
+
 ## [1.2.0] - 2026-08-17
 
 ### Changed

@@ -79,6 +79,31 @@ const RESERVED_KEYWORDS = new Set([
   'VERBOSE', 'WHEN', 'WHERE', 'WINDOW', 'WITH',
 ]);
 
+/**
+ * Palavras-chave de DDL do PostgreSQL que são "non-reserved" na coluna
+ * "PostgreSQL" do mesmo apêndice de `RESERVED_KEYWORDS` (2026-08-18) — ou
+ * seja, PODEM em tese ser usadas como identificador sem aspas (por isso
+ * ficam fora de `RESERVED_KEYWORDS`, que é só sobre segurança de
+ * quoting), mas na prática só aparecem como palavra de comando de DDL
+ * (`CREATE`/`ALTER`/`DROP ...`) — construção fora do escopo deste
+ * formatter, que cai no fallback genérico (ver `formatStatement` em
+ * formatter.ts). Sem essa lista, `normalizeIdentSegment` as tratava como
+ * identificador comum e as dobrava pra minúsculo (`DROP TABLE Foo` virava
+ * `drop TABLE foo`) — o mesmo bug que a lista de `RESERVED_KEYWORDS`
+ * evita para `CREATE`/`TABLE`/etc, só que para a metade "non-reserved" do
+ * vocabulário de DDL. Curada (não é a categoria "non-reserved" inteira
+ * do apêndice — essa é enorme e cheia de palavras comuns como nome de
+ * coluna, ex. `NAME`/`TEXT`/`VALUE`/`ROLE`/`COMMENT`/`LANGUAGE`; incluir
+ * essas arriscaria parar de dobrar coluna real assim escrita com
+ * maiúscula) — cobre só verbo/objeto de DDL sem ambiguidade plausível
+ * como nome de coluna.
+ */
+const NON_RESERVED_DDL_KEYWORDS = new Set([
+  'ALTER', 'DROP', 'INDEX', 'VIEW', 'SCHEMA', 'SEQUENCE', 'TRIGGER',
+  'FUNCTION', 'PROCEDURE', 'TYPE', 'DOMAIN', 'EXTENSION', 'MATERIALIZED',
+  'TABLESPACE', 'CASCADE', 'RESTRICT', 'TRUNCATE', 'RENAME',
+]);
+
 /** Um identificador entre aspas só precisa delas se tiver maiúscula, espaço, acento ou outro caractere fora de `[a-z0-9_]`, ou se colidir com uma palavra reservada do Postgres. */
 const SAFE_TO_UNQUOTE = /^[a-z_][a-z0-9_]*$/;
 
@@ -99,18 +124,22 @@ export function quoteIdentIfNeeded(name: string): string {
  * banco), então preservar a caixa original seria mostrar uma "caixa" que
  * nunca existiu de verdade pro banco. Exceção: um segmento que bate com uma
  * palavra reservada do Postgres (`RESERVED_KEYWORDS`) nunca é dobrado —
- * `CREATE`/`TABLE`/`DROP`/... não são identificadores de dado (nem
- * poderiam ser sem aspas, são reservadas de verdade), então o "Postgres
- * dobra identificador sem aspas" nem se aplica; são palavras de DDL fora
- * do escopo deste formatter (caem no fallback genérico — ver
- * `formatStatement`), e mexer na caixa delas seria arriscar sem necessidade.
+ * `CREATE`/`TABLE`/... não são identificadores de dado (nem poderiam ser
+ * sem aspas, são reservadas de verdade), então o "Postgres dobra
+ * identificador sem aspas" nem se aplica; idem para uma palavra de
+ * `NON_RESERVED_DDL_KEYWORDS` (`DROP`/`ALTER`/...) — tecnicamente
+ * poderiam ser identificador sem aspas pro Postgres, mas na prática só
+ * aparecem como comando de DDL. Ambas são palavras fora do escopo deste
+ * formatter (caem no fallback genérico — ver `formatStatement`), e mexer
+ * na caixa delas seria arriscar sem necessidade.
  * Um segmento COM aspas no fonte nunca tem sua caixa/conteúdo alterado —
  * aspas são exatamente como se preserva maiúscula/espaço/acento no
  * Postgres — mas as aspas em si são removidas quando ficam supérfluas
  * (minúsculo/dígito/`_`, sem colidir com reservada). */
 function normalizeIdentSegment(segment: string): string {
   if (segment[0] !== '"') {
-    return RESERVED_KEYWORDS.has(segment.toUpperCase()) ? segment : segment.toLowerCase();
+    const upper = segment.toUpperCase();
+    return RESERVED_KEYWORDS.has(upper) || NON_RESERVED_DDL_KEYWORDS.has(upper) ? segment : segment.toLowerCase();
   }
   const inner = segment.slice(1, -1).replace(/""/g, '"');
   return SAFE_TO_UNQUOTE.test(inner) && !RESERVED_KEYWORDS.has(inner.toUpperCase()) ? inner : segment;

@@ -1625,6 +1625,19 @@ function formatStatementList(tokens: Token[], start: number, indent: number, cfg
   return { lines, next: cursor };
 }
 
+/** Palavra que abre um statement PL/pgSQL com bloco filho estruturado ->
+ * formatter dedicado (mesma assinatura pros quatro: `formatIfStatement`,
+ * `formatForStatement`, `formatLoopStatement`, `formatBeginBlock`) —
+ * `formatOneBodyStatement` despacha por aqui em vez de um `if`/`if`/`if`
+ * repetindo a mesma chamada+checagem de `null`+wrap pra cada palavra;
+ * adicionar um quinto tipo de bloco é só uma entrada nova aqui. */
+const BLOCK_STATEMENT_HANDLERS: Record<string, (tokens: Token[], start: number, indent: number, cfg: Cfg) => BodyResult | null> = {
+  IF: formatIfStatement,
+  FOR: formatForStatement,
+  LOOP: formatLoopStatement,
+  BEGIN: formatBeginBlock,
+};
+
 /** Devolve `null` se um bloco filho (IF/FOR/BEGIN) não pôde ser formatado com
  * segurança — ver os comentários em `formatBeginBlock`/`formatIfStatement`/
  * `formatForStatement` sobre terminador inesperado. */
@@ -1647,29 +1660,9 @@ function formatOneBodyStatement(tokens: Token[], start: number, indent: number, 
   }
 
   const kw = tokens[cursor].upper;
-  if (kw === 'IF') {
-    const r = formatIfStatement(tokens, cursor, indent, cfg);
-    if (r === null) {
-      return null;
-    }
-    return { lines: [...lines, ...r.lines], next: r.next, kind: 'block' };
-  }
-  if (kw === 'FOR') {
-    const r = formatForStatement(tokens, cursor, indent, cfg);
-    if (r === null) {
-      return null;
-    }
-    return { lines: [...lines, ...r.lines], next: r.next, kind: 'block' };
-  }
-  if (kw === 'LOOP') {
-    const r = formatLoopStatement(tokens, cursor, indent, cfg);
-    if (r === null) {
-      return null;
-    }
-    return { lines: [...lines, ...r.lines], next: r.next, kind: 'block' };
-  }
-  if (kw === 'BEGIN') {
-    const r = formatBeginBlock(tokens, cursor, indent, cfg);
+  const blockHandler = BLOCK_STATEMENT_HANDLERS[kw];
+  if (blockHandler) {
+    const r = blockHandler(tokens, cursor, indent, cfg);
     if (r === null) {
       return null;
     }
@@ -1938,14 +1931,17 @@ function formatBeginBlock(tokens: Token[], start: number, indent: number, cfg: C
   return { lines, next: cursor };
 }
 
-/** `LOOP ... END LOOP` incondicional (sem `FOR var IN`) — idiom comum de
- * "tenta de novo": mesma estrutura de corpo/terminador de
- * `formatForStatement`, só sem cabeçalho nenhum antes do `LOOP`. */
-function formatLoopStatement(tokens: Token[], start: number, indent: number, cfg: Cfg): BodyResult | null {
+/** Corpo + terminador compartilhado por `formatLoopStatement` e
+ * `formatForStatement`, que só diferem no cabeçalho antes do `LOOP`
+ * (nenhum vs. `FOR var IN ...`): formata a lista de statements a partir
+ * de `bodyStart` (indentada `indentSize` a mais que `indent`, o nível do
+ * `LOOP`/`FOR` em si) e, se houver um `END` fechando o bloco, empilha
+ * `END LOOP;` em `lines` — mesma convenção de "não fabrica terminador"
+ * de `formatIfStatement`/`formatBeginBlock`: sem `END`, devolve `null` e
+ * deixa o chamador cair no fallback seguro. */
+function finishLoopBody(tokens: Token[], bodyStart: number, indent: number, cfg: Cfg, lines: string[]): { next: number } | null {
   const pad = ' '.repeat(indent);
-  const lines = [`${pad}LOOP`];
-
-  const body = formatStatementList(tokens, start + 1, indent + cfg.indentSize, cfg);
+  const body = formatStatementList(tokens, bodyStart, indent + cfg.indentSize, cfg);
   if (body === null) {
     return null;
   }
@@ -1953,7 +1949,6 @@ function formatLoopStatement(tokens: Token[], start: number, indent: number, cfg
   let cursor = body.next;
 
   if (tokens[cursor]?.upper !== 'END') {
-    // Idem formatIfStatement/formatBeginBlock: não fabrica `END LOOP;`.
     return null;
   }
   lines.push(`${pad}END LOOP;`);
@@ -1961,7 +1956,19 @@ function formatLoopStatement(tokens: Token[], start: number, indent: number, cfg
   if (tokens[cursor]?.text === ';') {
     cursor++;
   }
-  return { lines, next: cursor };
+  return { next: cursor };
+}
+
+/** `LOOP ... END LOOP` incondicional (sem `FOR var IN`) — idiom comum de
+ * "tenta de novo": mesma estrutura de corpo/terminador de
+ * `formatForStatement`, só sem cabeçalho nenhum antes do `LOOP`. */
+function formatLoopStatement(tokens: Token[], start: number, indent: number, cfg: Cfg): BodyResult | null {
+  const lines = [`${' '.repeat(indent)}LOOP`];
+  const result = finishLoopBody(tokens, start + 1, indent, cfg, lines);
+  if (result === null) {
+    return null;
+  }
+  return { lines, next: result.next };
 }
 
 /** `FOR var IN (query) LOOP ... END LOOP` — a lista após IN reaproveita
@@ -1995,23 +2002,11 @@ function formatForStatement(tokens: Token[], start: number, indent: number, cfg:
   }
   lines.push(`${pad}LOOP`);
 
-  const body = formatStatementList(tokens, cursor, indent + cfg.indentSize, cfg);
-  if (body === null) {
+  const result = finishLoopBody(tokens, cursor, indent, cfg, lines);
+  if (result === null) {
     return null;
   }
-  lines.push(...body.lines);
-  cursor = body.next;
-
-  if (tokens[cursor]?.upper !== 'END') {
-    // Idem formatIfStatement/formatBeginBlock — não fabrica `END LOOP;`.
-    return null;
-  }
-  lines.push(`${pad}END LOOP;`);
-  cursor += tokens[cursor + 1]?.upper === 'LOOP' ? 2 : 1;
-  if (tokens[cursor]?.text === ';') {
-    cursor++;
-  }
-  return { lines, next: cursor };
+  return { lines, next: result.next };
 }
 
 /** Renderiza uma declaração de `DECLARE` (`nome TIPO [NOT NULL] [DEFAULT
@@ -2143,12 +2138,10 @@ function formatPlpgsqlBody(tokens: Token[], indent: number, cfg: Cfg): string[] 
  * via `formatPlpgsqlBody`. Devolve `null` se `tokens` não é esse tipo de
  * statement (deixa o chamador cair no fallback de sempre). */
 function tryFormatCreateFunction(tokens: Token[], cfg: Cfg): string[] | null {
+  // `tokens` chega aqui já sem comentário de cabeçalho — `formatStatement`
+  // extrai isso antes de chamar (o `prefix` que ele prefixa no resultado
+  // final), então não há necessidade de coletar comentário aqui também.
   let cursor = 0;
-  const leadingComments: string[] = [];
-  while (tokens[cursor] && (tokens[cursor].type === 'comment' || tokens[cursor].type === 'blockComment')) {
-    leadingComments.push(tokens[cursor].text);
-    cursor++;
-  }
   if (tokens[cursor]?.upper !== 'CREATE') {
     return null;
   }
@@ -2173,7 +2166,7 @@ function tryFormatCreateFunction(tokens: Token[], cfg: Cfg): string[] | null {
   const paramsInline = renderParamsInline(tokens.slice(cursor, paramsClose + 1), cfg);
   cursor = paramsClose + 1;
 
-  const lines = [...leadingComments, `${header} ${nameTok.text}${paramsInline}`];
+  const lines = [`${header} ${nameTok.text}${paramsInline}`];
 
   // RETURNS e LANGUAGE, nessa ordem ou na outra, antes do corpo — sintaxe
   // válida em qualquer uma das duas ordens (os docs do Postgres usam as
@@ -2245,27 +2238,23 @@ function tryFormatCreateFunction(tokens: Token[], cfg: Cfg): string[] | null {
  * indentado; tipo de cada campo não é maiusculizado (não é keyword nem cast,
  * é só um identificador — preserva o que veio no fonte). */
 function tryFormatCreateType(tokens: Token[], cfg: Cfg): string[] | null {
-  let cursor = 0;
-  const leadingComments: string[] = [];
-  while (tokens[cursor] && (tokens[cursor].type === 'comment' || tokens[cursor].type === 'blockComment')) {
-    leadingComments.push(tokens[cursor].text);
-    cursor++;
-  }
-  if (tokens[cursor]?.upper !== 'CREATE' || tokens[cursor + 1]?.upper !== 'TYPE') {
+  // Idem `tryFormatCreateFunction`: `tokens` já chega sem comentário de
+  // cabeçalho, `formatStatement` cuida disso antes de chamar.
+  if (tokens[0]?.upper !== 'CREATE' || tokens[1]?.upper !== 'TYPE') {
     return null;
   }
-  const nameTok = tokens[cursor + 2];
-  if (!nameTok || tokens[cursor + 3]?.upper !== 'AS' || tokens[cursor + 4]?.text !== '(') {
+  const nameTok = tokens[2];
+  if (!nameTok || tokens[3]?.upper !== 'AS' || tokens[4]?.text !== '(') {
     return null;
   }
-  const openIdx = cursor + 4;
+  const openIdx = 4;
   const closeIdx = matchParen(tokens, openIdx) - 1;
   if (closeIdx !== tokens.length - 1) {
     return null;
   }
 
   const fields = splitTopLevelCommas(tokens.slice(openIdx + 1, closeIdx));
-  const lines = [...leadingComments, `CREATE TYPE ${nameTok.text} AS (`];
+  const lines = [`CREATE TYPE ${nameTok.text} AS (`];
   fields.forEach((field, idx) => {
     const suffix = idx < fields.length - 1 ? ',' : '';
     lines.push(`${' '.repeat(cfg.indentSize)}${renderTokensInline(field, cfg)}${suffix}`);

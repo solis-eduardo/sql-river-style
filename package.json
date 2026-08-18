@@ -2,7 +2,7 @@
   "name": "sql-river-style",
   "displayName": "SQL River Style",
   "description": "Opinionated SQL formatter with right-aligned (\"river style\") keywords, one column per line, and structured CTEs/JOINs/CASE blocks.",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "publisher": "EduardoBraun",
   "private": true,
   "license": "MIT",
