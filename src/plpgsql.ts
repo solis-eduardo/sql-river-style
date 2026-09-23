@@ -8,23 +8,16 @@
  * qualquer um desses — reaproveitando o motor de SELECT/CTE/UNION
  * (`formatQuery`) e as primitivas de renderização de expressão
  * (`renderTokensInline`, `renderExpressionLines`, `uppercaseTypeTokens`,
- * `renderFallbackLines`, `firstMeaningfulKeyword`) de formatter.ts.
- *
- * Este módulo NÃO importa essas funções como valor: formatter.ts importa
- * `tryFormatCreateFunction`/`tryFormatCreateType` DESTE módulo, então um
- * import de valor na direção contrária fecharia um require() circular em
- * CommonJS (o `module` alvo deste projeto). Em vez disso, elas chegam via
- * `cfg.render.*`, injetado por `buildCfg` em formatter.ts — a única coisa
- * que este módulo importa de formatter.ts é o TIPO `Cfg` (apagado em tempo
- * de compilação, não gera `require()` nenhum). Construções não cobertas
+ * `renderFallbackLines`, `firstMeaningfulKeyword`) de render.ts — a mesma
+ * camada que formatter.ts usa pro SQL de topo. Construções não cobertas
  * (EXCEPTION, WHILE, CURSOR, EXECUTE dinâmico, ELSIF...) caem no fallback de
- * linha única (`cfg.render.tokensInline`), igual a qualquer DDL fora de
- * escopo — nunca perdem conteúdo, só não ganham reestruturação.
+ * linha única (`renderFallbackLines`), igual a qualquer DDL fora de escopo
+ * — nunca perdem conteúdo, só não ganham reestruturação.
  */
 
-import type { Cfg } from './formatter';
-import { Token } from './tokenizer';
+import { Token, FORMATTABLE_STATEMENT_KEYWORDS } from './tokenizer';
 import { matchParen, findAtDepth0, findStatementEnd, splitAtCommaDepth0 } from './token-scan';
+import { Cfg, formatQuery, renderTokensInline, renderExpressionLines, uppercaseTypeTokens, renderFallbackLines, firstMeaningfulKeyword } from './render';
 
 /** `true` se `tokens[i]` é uma palavra que fecha o bloco atual (ELSE, ou
  * qualquer `END`/`END IF`/`END LOOP`) — quem está formatando uma lista de
@@ -165,15 +158,13 @@ function formatOneBodyStatement(tokens: Token[], start: number, indent: number, 
 
   const end = findStatementEnd(tokens, cursor);
   const stmtTokens = tokens.slice(cursor, end);
-  const stmtFirstKeyword = cfg.render.firstKeyword(stmtTokens);
-  const isQuery = !!stmtFirstKeyword && EMBEDDED_QUERY_KEYWORDS.has(stmtFirstKeyword);
+  const stmtFirstKeyword = firstMeaningfulKeyword(stmtTokens);
+  const isQuery = !!stmtFirstKeyword && FORMATTABLE_STATEMENT_KEYWORDS.has(stmtFirstKeyword);
   const isCall = !!stmtFirstKeyword && PLPGSQL_LEAF_KEYWORDS.has(stmtFirstKeyword);
   lines.push(...renderSimpleBodyStatement(stmtTokens, indent, cfg));
   const next = tokens[end]?.text === ';' ? end + 1 : end;
   return { lines, next, kind: isQuery ? 'query' : isCall ? 'call' : 'other' };
 }
-
-const EMBEDDED_QUERY_KEYWORDS = new Set(['SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE']);
 
 /** Palavras que abrem um statement PL/pgSQL "folha" (sem estruturação
  * própria neste formatter — ver comentário no topo da seção CREATE
@@ -222,15 +213,15 @@ function renderSimpleBodyStatement(stmtTokens: Token[], indent: number, cfg: Cfg
     const name = stmtTokens[0].text;
     const exprTokens = stmtTokens.slice(3);
     const prefix = `${pad}${name} := `;
-    const lines = cfg.render.expressionLines(exprTokens, prefix.length, cfg);
+    const lines = renderExpressionLines(exprTokens, prefix.length, cfg);
     lines[0] = prefix + lines[0];
     lines[lines.length - 1] += ';';
     return lines;
   }
 
-  const firstKeyword = cfg.render.firstKeyword(stmtTokens);
-  if (firstKeyword && EMBEDDED_QUERY_KEYWORDS.has(firstKeyword)) {
-    const lines = cfg.render.query(stmtTokens, indent, cfg);
+  const firstKeyword = firstMeaningfulKeyword(stmtTokens);
+  if (firstKeyword && FORMATTABLE_STATEMENT_KEYWORDS.has(firstKeyword)) {
+    const lines = formatQuery(stmtTokens, indent, cfg);
     lines[lines.length - 1] += ';';
     return lines;
   }
@@ -256,14 +247,14 @@ function renderSimpleBodyStatement(stmtTokens: Token[], indent: number, cfg: Cfg
       continue;
     }
     const closeIdx = matchParen(leaf, i) - 1;
-    const before = cfg.render.tokensInline(leaf.slice(0, i), cfg);
+    const before = renderTokensInline(leaf.slice(0, i), cfg);
     const inner = leaf.slice(i + 1, closeIdx);
     const after = leaf.slice(closeIdx + 1);
-    const lines = [`${pad}${before} (`, ...cfg.render.query(inner, indent + cfg.indentSize, cfg, true), `${pad})${after.length ? ' ' + cfg.render.tokensInline(after, cfg) : ''};`];
+    const lines = [`${pad}${before} (`, ...formatQuery(inner, indent + cfg.indentSize, cfg, true), `${pad})${after.length ? ' ' + renderTokensInline(after, cfg) : ''};`];
     return lines;
   }
 
-  return [`${pad}${cfg.render.tokensInline(leaf, cfg)};`];
+  return [`${pad}${renderTokensInline(leaf, cfg)};`];
 }
 
 function formatReturnStatement(tokens: Token[], start: number, indent: number, cfg: Cfg): BodyResult {
@@ -285,7 +276,7 @@ function formatReturnStatement(tokens: Token[], start: number, indent: number, c
     lines.push(`${pad}${prefix};`);
   } else {
     const fullPrefix = `${pad}${prefix} `;
-    const exprLines = cfg.render.expressionLines(exprTokens, fullPrefix.length, cfg);
+    const exprLines = renderExpressionLines(exprTokens, fullPrefix.length, cfg);
     exprLines[0] = fullPrefix + exprLines[0];
     exprLines[exprLines.length - 1] += ';';
     lines.push(...exprLines);
@@ -308,12 +299,12 @@ function renderIfCondition(tokens: Token[], indent: number, cfg: Cfg): string[] 
     }
     const kw = inner[p]?.upper;
     if (kw === 'SELECT' || kw === 'WITH') {
-      const innerLines = cfg.render.query(inner, indent + cfg.indentSize, cfg, true);
+      const innerLines = formatQuery(inner, indent + cfg.indentSize, cfg, true);
       return [`${pad}IF (`, ...innerLines, `${pad})`];
     }
-    return [`${pad}IF ( ${cfg.render.tokensInline(inner, cfg)} )`];
+    return [`${pad}IF ( ${renderTokensInline(inner, cfg)} )`];
   }
-  return [`${pad}IF ${cfg.render.tokensInline(tokens, cfg)}`];
+  return [`${pad}IF ${renderTokensInline(tokens, cfg)}`];
 }
 
 function formatIfStatement(tokens: Token[], start: number, indent: number, cfg: Cfg): BodyResult | null {
@@ -389,7 +380,7 @@ function formatBeginBlock(tokens: Token[], start: number, indent: number, cfg: C
       if (thenIdx >= tokens.length) {
         return null;
       }
-      const condText = cfg.render.tokensInline(tokens.slice(cursor, thenIdx), cfg);
+      const condText = renderTokensInline(tokens.slice(cursor, thenIdx), cfg);
       lines.push(`${pad}${firstHandler ? 'EXCEPTION ' : ''}WHEN ${condText} THEN`);
       firstHandler = false;
       cursor = thenIdx + 1;
@@ -470,7 +461,7 @@ function formatForStatement(tokens: Token[], start: number, indent: number, cfg:
   const pad = ' '.repeat(indent);
   let cursor = start + 1;
   const inIdx = findAtDepth0(tokens, cursor, 'IN');
-  const varText = cfg.render.tokensInline(tokens.slice(cursor, inIdx), cfg);
+  const varText = renderTokensInline(tokens.slice(cursor, inIdx), cfg);
   cursor = inIdx + 1;
 
   const lines: string[] = [];
@@ -478,12 +469,12 @@ function formatForStatement(tokens: Token[], start: number, indent: number, cfg:
     const closeIdx = matchParen(tokens, cursor) - 1;
     const inner = tokens.slice(cursor + 1, closeIdx);
     lines.push(`${pad}FOR ${varText} IN (`);
-    lines.push(...cfg.render.query(inner, indent + cfg.indentSize, cfg, true));
+    lines.push(...formatQuery(inner, indent + cfg.indentSize, cfg, true));
     lines.push(`${pad})`);
     cursor = closeIdx + 1;
   } else {
     const loopIdx = findAtDepth0(tokens, cursor, 'LOOP');
-    lines.push(`${pad}FOR ${varText} IN ${cfg.render.tokensInline(tokens.slice(cursor, loopIdx), cfg)}`);
+    lines.push(`${pad}FOR ${varText} IN ${renderTokensInline(tokens.slice(cursor, loopIdx), cfg)}`);
     cursor = loopIdx;
   }
 
@@ -513,8 +504,8 @@ function renderDeclareLine(tokens: Token[], cfg: Cfg): string {
       break;
     }
   }
-  const withUppercasedType = [...tokens.slice(0, 1), ...cfg.render.uppercaseTypes(tokens.slice(1, typeEnd)), ...tokens.slice(typeEnd)];
-  return cfg.render.tokensInline(withUppercasedType, cfg);
+  const withUppercasedType = [...tokens.slice(0, 1), ...uppercaseTypeTokens(tokens.slice(1, typeEnd)), ...tokens.slice(typeEnd)];
+  return renderTokensInline(withUppercasedType, cfg);
 }
 
 /** Renderiza a lista de parâmetros de `CREATE FUNCTION`/`PROCEDURE`
@@ -530,7 +521,7 @@ function renderDeclareLine(tokens: Token[], cfg: Cfg): string {
  * reconhecido — cosmético, não perde nem quebra nada. */
 function renderParamsInline(tokens: Token[], cfg: Cfg): string {
   if (tokens[0]?.text !== '(' || tokens[tokens.length - 1]?.text !== ')') {
-    return cfg.render.tokensInline(tokens, cfg);
+    return renderTokensInline(tokens, cfg);
   }
   const inner = tokens.slice(1, tokens.length - 1);
   if (inner.length === 0) {
@@ -617,7 +608,7 @@ function formatPlpgsqlBody(tokens: Token[], indent: number, cfg: Cfg): string[] 
     // Sobra inesperada (construção não coberta) — preserva em vez de
     // descartar, sem tentar reformatar (ver `renderFallbackLines` sobre por
     // que isso é mais de uma linha quando tem comentário no meio).
-    lines.push(...cfg.render.fallbackLines(tokens.slice(cursor), cfg).map((l: string) => pad + l));
+    lines.push(...renderFallbackLines(tokens.slice(cursor), cfg).map((l: string) => pad + l));
   }
 
   return lines;
@@ -671,14 +662,14 @@ export function tryFormatCreateFunction(tokens: Token[], cfg: Cfg): string[] | n
     if (tokens[cursor]?.upper === 'RETURNS') {
       cursor++;
       const stopIdx = Math.min(findAtDepth0(tokens, cursor, 'AS'), findAtDepth0(tokens, cursor, 'LANGUAGE'));
-      lines.push(`RETURNS ${cfg.render.tokensInline(cfg.render.uppercaseTypes(tokens.slice(cursor, stopIdx)), cfg)}`);
+      lines.push(`RETURNS ${renderTokensInline(uppercaseTypeTokens(tokens.slice(cursor, stopIdx)), cfg)}`);
       cursor = stopIdx;
       continue;
     }
     if (tokens[cursor]?.upper === 'LANGUAGE') {
       cursor++;
       const stopIdx = Math.min(findAtDepth0(tokens, cursor, 'AS'), findAtDepth0(tokens, cursor, 'RETURNS'));
-      lines.push(`LANGUAGE ${cfg.render.tokensInline(tokens.slice(cursor, stopIdx), cfg)}`);
+      lines.push(`LANGUAGE ${renderTokensInline(tokens.slice(cursor, stopIdx), cfg)}`);
       cursor = stopIdx;
       continue;
     }
@@ -718,7 +709,7 @@ export function tryFormatCreateFunction(tokens: Token[], cfg: Cfg): string[] | n
       langTokens.push(tokens[cursor]);
       cursor++;
     }
-    lines.push(`LANGUAGE ${cfg.render.tokensInline(langTokens, cfg)}`);
+    lines.push(`LANGUAGE ${renderTokensInline(langTokens, cfg)}`);
   }
 
   return lines;
@@ -747,7 +738,7 @@ export function tryFormatCreateType(tokens: Token[], cfg: Cfg): string[] | null 
   const lines = [`CREATE TYPE ${nameTok.text} AS (`];
   fields.forEach((field, idx) => {
     const suffix = idx < fields.length - 1 ? ',' : '';
-    lines.push(`${' '.repeat(cfg.indentSize)}${cfg.render.tokensInline(field, cfg)}${suffix}`);
+    lines.push(`${' '.repeat(cfg.indentSize)}${renderTokensInline(field, cfg)}${suffix}`);
   });
   lines.push(')');
   return lines;

@@ -53,6 +53,17 @@ export const KEYWORD_SET = new Set([
 ]);
 
 /**
+ * Palavras que abrem um statement de query/DML formatável (regras river
+ * style de topo, em formatter.ts, e SQL embutido num corpo PL/pgSQL, em
+ * plpgsql.ts). Compartilhada entre os dois módulos — sem isso, cada um
+ * mantinha sua própria cópia idêntica do mesmo Set (`FORMATTABLE` em
+ * formatter.ts, `EMBEDDED_QUERY_KEYWORDS` em plpgsql.ts), sem nenhum jeito
+ * de achar as duas com um grep só depois que o split em dois arquivos as
+ * afastou.
+ */
+export const FORMATTABLE_STATEMENT_KEYWORDS = new Set(['SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE']);
+
+/**
  * Palavras reservadas do PostgreSQL — TODAS as variantes de "reserved" na
  * coluna "PostgreSQL" de https://www.postgresql.org/docs/current/sql-keywords-appendix.html
  * (extraídas da tabela em 2026-08-14; reconferir se a extensão for

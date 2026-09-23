@@ -5,7 +5,6 @@
  * eram exercitados por acidente através de um exemplo de SQL inteiro em
  * examples/ agora são testados aqui, contra a interface de verdade.
  */
-import assert from 'node:assert/strict';
 import { tokenize } from '../src/tokenizer';
 import {
   DepthCursor,
@@ -17,19 +16,10 @@ import {
   splitAtSetOpDepth0,
   stripOuterParens,
 } from '../src/token-scan';
+import { Checker } from './check';
 
-let failures = 0;
-
-function check(name: string, actual: unknown, expected: unknown): void {
-  try {
-    assert.deepEqual(actual, expected);
-    console.log(`ok - ${name}`);
-  } catch (err) {
-    failures++;
-    console.error(`FALHOU - ${name}`);
-    console.error(err);
-  }
-}
+const t = new Checker();
+const check = t.check.bind(t);
 
 // tok() usa o tokenizer de verdade em vez de montar Token[] à mão — os
 // testes ficam lendo como SQL, e continuam corretos se o tokenizer mudar de
@@ -116,8 +106,4 @@ check('stripOuterParens: não mexe quando os parênteses não envolvem tudo', st
   check('DepthCursor: só o primeiro AND depois de BETWEEN é consumido', consumedAsBetween, [true, false]);
 }
 
-if (failures > 0) {
-  console.error(`\n${failures} teste(s) de token-scan.ts falharam.`);
-  process.exit(1);
-}
-console.log('\ntoken-scan.ts: todos os testes bateram.');
+t.finish('token-scan.ts');

@@ -9,21 +9,11 @@
  * fazer isso quotaria/preservaria aspas à toa (`drop`/`"drop"` como
  * identificador de verdade são seguros sem aspas pro Postgres).
  */
-import assert from 'node:assert/strict';
 import { tokenize, quoteIdentIfNeeded, isProtectedFromCaseFold } from '../src/tokenizer';
+import { Checker } from './check';
 
-let failures = 0;
-
-function check(name: string, actual: unknown, expected: unknown): void {
-  try {
-    assert.deepEqual(actual, expected);
-    console.log(`ok - ${name}`);
-  } catch (err) {
-    failures++;
-    console.error(`FALHOU - ${name}`);
-    console.error(err);
-  }
-}
+const t = new Checker();
+const check = t.check.bind(t);
 
 function identText(sql: string): string {
   const tokens = tokenize(sql).filter((t) => t.type !== 'comment' && t.type !== 'blockComment');
@@ -58,8 +48,4 @@ check('tokenize: "Usuario" entre aspas preserva maiúscula (não é seguro tirar
 check('quoteIdentIfNeeded: "drop" (alias) fica sem aspas — não é RESERVED_KEYWORDS', quoteIdentIfNeeded('drop'), 'drop');
 check('quoteIdentIfNeeded: "select" (alias) precisa de aspas — é RESERVED_KEYWORDS', quoteIdentIfNeeded('select'), '"select"');
 
-if (failures > 0) {
-  console.error(`\n${failures} teste(s) de tokenizer.ts falharam.`);
-  process.exit(1);
-}
-console.log('\ntokenizer.ts: todos os testes bateram.');
+t.finish('tokenizer.ts');

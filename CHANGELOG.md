@@ -3,6 +3,32 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.3] - 2026-09-23
+
+### Changed
+
+- Code-review cleanup on the 1.2.2 architecture refactor — no formatting
+  output change:
+  - `findTopLevelCase`/`splitCaseBranches` (`src/formatter.ts`) now read
+    `DepthCursor`'s own `caseDepth` instead of duplicating a second
+    CASE-nesting counter alongside it.
+  - The `Cfg.render` dependency-injection bag that let `plpgsql.ts` call
+    back into `formatter.ts`'s rendering primitives without a circular
+    `require()` is gone. Those primitives (`formatQuery`,
+    `renderTokensInline`, `renderExpressionLines`, `uppercaseTypeTokens`,
+    `renderFallbackLines`, `firstMeaningfulKeyword`) now live in a new
+    `src/render.ts`, imported directly by both `formatter.ts` (top-level
+    orchestration) and `plpgsql.ts` — no DI layer needed.
+  - The formattable-statement-keyword set (`SELECT`/`WITH`/`INSERT`/
+    `UPDATE`/`DELETE`) was duplicated once per file after the 1.2.2
+    split; unified into one `FORMATTABLE_STATEMENT_KEYWORDS` exported
+    from `tokenizer.ts`.
+  - Removed two unused imports left over in `formatter.ts` from the
+    1.2.2 split.
+  - The `check()` test helper, copied identically into
+    `test/tokenizer.ts`, `test/plpgsql.ts` and `test/token-scan.ts`, is
+    now a shared `Checker` class in `test/check.ts`.
+
 ## [1.2.2] - 2026-08-18
 
 ### Changed

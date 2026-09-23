@@ -8,23 +8,13 @@
  * quem chamou" que faz o `null` valer a pena em vez de virar um enum de
  * motivo (ver grilling de candidate 2).
  */
-import assert from 'node:assert/strict';
 import { tokenize } from '../src/tokenizer';
 import { buildCfg } from '../src/formatter';
 import { formatStatementList, tryFormatCreateFunction, tryFormatCreateType } from '../src/plpgsql';
+import { Checker } from './check';
 
-let failures = 0;
-
-function check(name: string, actual: unknown, expected: unknown): void {
-  try {
-    assert.deepEqual(actual, expected);
-    console.log(`ok - ${name}`);
-  } catch (err) {
-    failures++;
-    console.error(`FALHOU - ${name}`);
-    console.error(err);
-  }
-}
+const t = new Checker();
+const check = t.check.bind(t);
 
 function ok(name: string, condition: boolean): void {
   check(name, condition, true);
@@ -59,7 +49,7 @@ function tok(sql: string) {
   const tokens = tok('FOR r IN (SELECT 1) LOOP x := r; END LOOP;');
   const r = formatStatementList(tokens, 0, 0, cfg);
   ok('formatStatementList: FOR...IN (query) LOOP bem formado não devolve null', r !== null);
-  ok('formatStatementList: embute a query via cfg.render.query (sem virar fallback de uma linha)', !!r && r.lines.some((l) => l.trim() === 'SELECT 1'));
+  ok('formatStatementList: embute a query via formatQuery (sem virar fallback de uma linha)', !!r && r.lines.some((l) => l.trim() === 'SELECT 1'));
   ok('formatStatementList: fecha com END LOOP;', !!r && r.lines[r.lines.length - 1].trim() === 'END LOOP;');
 }
 
@@ -110,8 +100,4 @@ check('tryFormatCreateFunction: statement que não é CREATE FUNCTION/PROCEDURE 
 }
 check('tryFormatCreateType: statement que não é CREATE TYPE devolve null', tryFormatCreateType(tok('SELECT 1'), cfg), null);
 
-if (failures > 0) {
-  console.error(`\n${failures} teste(s) de plpgsql.ts falharam.`);
-  process.exit(1);
-}
-console.log('\nplpgsql.ts: todos os testes bateram.');
+t.finish('plpgsql.ts');
